@@ -42,6 +42,11 @@
   ].join(", ");
   const MEDIA_SELECTOR = "img, video";
   const CONTROL_CLASS = "photoprism-enhancements-volume";
+  const AUTOPLAY_BUTTON_CLASS = "photoprism-enhancements-autoplay-toggle";
+  const AUTOPLAY_ENABLED_KEY = "autoplayEnabled";
+  const CLOSE_BUTTON_SELECTOR = ".pswp__top-bar .pswp__button--close-button";
+  const AUTOPLAY_ICON_ON = "M10,16.5V7.5L16,12M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2Z";
+  const AUTOPLAY_ICON_OFF = "M10,16.5L16,12L10,7.5V16.5M12,2A10,10 0 0,1 22,12A10,10 0 0,1 12,22A10,10 0 0,1 2,12A10,10 0 0,1 12,2M12,4A8,8 0 0,0 4,12A8,8 0 0,0 12,20A8,8 0 0,0 20,12A8,8 0 0,0 12,4Z";
   const PLAY_BUTTON_SELECTOR = ".pswp__play";
   const MARKER_CONFIRM_SELECTOR = ".p-meta-face-markers__confirm .p-meta-face-markers__btn--confirm";
   const MARKER_REMOVE_SELECTOR = ".p-meta-face-markers__remove-confirm .p-meta-face-markers__btn--remove";
@@ -58,8 +63,9 @@
   const KEY_BADGE_CLASS = "photoprism-enhancements-key-badge";
   const KEY_BADGE_FADING_CLASS = "photoprism-enhancements-key-badge--fading";
   const KEY_BADGE_VISIBLE_MS = 5000;
-  // Has to match the opacity transition of the bubbles in content.css.
-  const KEY_BADGE_FADE_MS = 500;
+  const KEY_BADGE_PAGE_VISIBLE_MS = 3000;
+  // Length of the opacity transition of the bubbles in content.css, including its delay.
+  const KEY_BADGE_FADE_MS = 700;
   const CLIPBOARD_MENU_BUTTON_SELECTOR = 'button.action-menu[aria-controls="t-clipboard"]';
   const CONTEXT_MENU_ATTRIBUTE = "data-photoprism-enhancements-context-menu";
   const CONTEXT_MENU_PROPERTIES = [
@@ -75,8 +81,8 @@
     "--photoprism-enhancements-menu-max-height",
   ];
   const personThumbs = new Map();
-  const AUTOPLAY_SETTLE_MS = 150;
-  const NATIVE_AUTOPLAY_GRACE_MS = 800;
+  const AUTOPLAY_SETTLE_MS = 0;
+  const NATIVE_AUTOPLAY_GRACE_MS = 0;
   const GALLERY_COVER_PAGE_SELECTOR = ".p-page-albums, .p-page-people, .p-page-labels, .p-page-files";
   const GALLERY_COVER_SELECTOR = [
     ".p-page-albums .result[data-uid]:not(.placeholder)",
@@ -94,9 +100,17 @@
   let volumePopover = null;
   let volumeSlider = null;
   let preferredVolume = null;
+  let autoplayEnabled = true;
+  // When the viewer user last asked for playback (play button, controls, or Space).
+  let lastPlayIntent = 0;
+  const PLAY_INTENT_MS = 300;
   let lastPersistedVolume = null;
   let hidePopoverTimer = null;
   const autoplayedMedia = new WeakSet();
+  // Slide container that was last autoplayed, so it can be autoplayed again after navigating back to it.
+  let lastAutoplayContainer = null;
+  // Slides that were autoplayed before and were left again.
+  const revisitedMedia = new WeakSet();
   const autoplayPositions = new WeakMap();
   let syncScheduled = false;
   let galleryItemUids = [];
@@ -118,6 +132,8 @@
   let queuedGalleryDirections = [];
   // When the key bubbles stop showing for the current visit to the viewer.
   let keyBadgeHideAt = null;
+  // Same for the bubbles outside of the viewer.
+  let pageKeyBadgeHideAt = null;
 
   function isDisplayed(element) {
     if (!element.isConnected) {
@@ -1043,12 +1059,153 @@
     element.dispatchEvent(new PointerEvent("pointerup", { ...init, buttons: 0 }));
   }
 
+  function createAutoplayButton() {
+    const svgNamespace = "http://www.w3.org/2000/svg";
+    const iconId = "photoprism-enhancements-icn-autoplay";
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `pswp__button pswp__button--mdi ${AUTOPLAY_BUTTON_CLASS}`;
+
+    const icon = document.createElementNS(svgNamespace, "svg");
+    icon.setAttribute("class", "pswp__icn");
+    icon.setAttribute("viewBox", "0 0 24 24");
+    icon.setAttribute("width", "24");
+    icon.setAttribute("height", "24");
+    icon.setAttribute("aria-hidden", "true");
+    const shadow = document.createElementNS(svgNamespace, "use");
+    shadow.setAttribute("class", "pswp__icn-shadow");
+    shadow.setAttribute("href", `#${iconId}`);
+    const path = document.createElementNS(svgNamespace, "path");
+    path.setAttribute("id", iconId);
+    icon.append(shadow, path);
+    button.append(icon);
+
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      setAutoplayEnabled(!autoplayEnabled);
+      button.blur();
+    });
+    return button;
+  }
+
+  function updateAutoplayButton(button) {
+    const state = String(autoplayEnabled);
+    if (button.getAttribute("aria-pressed") === state) {
+      return;
+    }
+
+    const label = autoplayEnabled ? "Autoplay: on" : "Autoplay: off";
+    button.setAttribute("aria-pressed", state);
+    button.title = label;
+    button.setAttribute("aria-label", label);
+    button.querySelector("path")?.setAttribute("d", autoplayEnabled ? AUTOPLAY_ICON_ON : AUTOPLAY_ICON_OFF);
+  }
+
+  // Adds the autoplay toggle right next to the viewer's close button.
+  function syncAutoplayButton(viewer) {
+    const closeButton = viewer.querySelector(CLOSE_BUTTON_SELECTOR);
+    if (!closeButton) {
+      return;
+    }
+
+    let button = closeButton.parentElement.querySelector(`.${AUTOPLAY_BUTTON_CLASS}`);
+    if (!button) {
+      button = createAutoplayButton();
+      closeButton.after(button);
+    }
+    updateAutoplayButton(button);
+  }
+
+  function setAutoplayEnabled(enabled, persist = true) {
+    autoplayEnabled = Boolean(enabled);
+    for (const button of document.querySelectorAll(`.${AUTOPLAY_BUTTON_CLASS}`)) {
+      updateAutoplayButton(button);
+    }
+    if (persist) {
+      chrome.storage.local.set({ [AUTOPLAY_ENABLED_KEY]: autoplayEnabled }).catch((error) => {
+        console.error("Could not save the PhotoPrism autoplay setting.", error);
+      });
+    }
+    scheduleSynchronization();
+  }
+
+  function markPlayIntent(event) {
+    const target = event.target;
+    if (
+      event.type === "keydown"
+        ? event.key === " " && Boolean(getViewer())
+        : target instanceof Element && Boolean(target.closest(".pswp__media, .p-lightbox__controls"))
+    ) {
+      lastPlayIntent = Date.now();
+    }
+  }
+
+  // With autoplay turned off, pause playback that PhotoPrism starts on its own
+  // (media opened from the gallery, GIFs, short videos, live photos). Playback the user
+  // asks for, and running slideshows, are left alone.
+  function suppressNativeAutoplay(event) {
+    const media = event.target;
+    if (
+      autoplayEnabled
+      || !(media instanceof HTMLMediaElement)
+      || !media.closest(".pswp__media")
+      || Date.now() - lastPlayIntent < PLAY_INTENT_MS
+      || document.querySelector(".slideshow-active")
+    ) {
+      return;
+    }
+
+    media.pause();
+  }
+
   // PhotoPrism only autoplays GIFs, short videos, and media opened from the gallery.
   // Every other video waits behind a play button, so press it once the slide has settled.
   function autoplayCurrentMedia(viewer) {
+    if (!autoplayEnabled) {
+      return;
+    }
+
+    // Once the autoplayed slide is no longer the one shown, forget it so that
+    // navigating back to it autoplays it again.
+    // PhotoSwipe marks the holder of the active slide with aria-hidden="false".
+    const activeHolder = viewer.querySelector('.pswp__item[aria-hidden="false"]');
+    if (
+      lastAutoplayContainer
+      && (
+        !lastAutoplayContainer.isConnected
+        || (activeHolder && !activeHolder.contains(lastAutoplayContainer))
+      )
+    ) {
+      autoplayedMedia.delete(lastAutoplayContainer);
+      revisitedMedia.add(lastAutoplayContainer);
+      lastAutoplayContainer = null;
+    }
+
+    // Media that is navigated back to starts right away, as soon as its slide becomes active.
+    const activeContainer = activeHolder?.querySelector(".pswp__media");
+    if (
+      activeContainer
+      && revisitedMedia.has(activeContainer)
+      && !autoplayedMedia.has(activeContainer)
+    ) {
+      autoplayedMedia.add(activeContainer);
+      lastAutoplayContainer = activeContainer;
+      const media = activeContainer.querySelector("video, audio");
+      if (media && media.paused) {
+        media.play().catch(() => {
+          const playButton = activeContainer.querySelector(PLAY_BUTTON_SELECTOR);
+          if (playButton && media.paused) {
+            simulateTap(playButton);
+          }
+        });
+      }
+      return;
+    }
+
     const button = findCurrentPlayButton(viewer);
     const container = button?.parentElement || button;
-    if (!button || autoplayedMedia.has(container)) {
+    if (!button || autoplayedMedia.has(container) || revisitedMedia.has(container)) {
       return;
     }
 
@@ -1060,6 +1217,7 @@
     }
 
     autoplayedMedia.add(container);
+    lastAutoplayContainer = container;
 
     // PhotoPrism starts GIFs, short videos, and media opened from the gallery on its own.
     // Wait for that first: pressing play while it is happening would toggle playback off.
@@ -1649,34 +1807,57 @@
     }
   }
 
+  function startKeyBadgeTimer(visibleMs) {
+    window.setTimeout(scheduleSynchronization, visibleMs + 50);
+    return Date.now() + visibleMs;
+  }
+
+  // Fades a bubble out and removes it when the fade has finished, whatever else gets updated meanwhile.
+  function fadeOutKeyBadge(badge) {
+    if (badge.classList.contains(KEY_BADGE_FADING_CLASS)) {
+      return;
+    }
+
+    badge.classList.add(KEY_BADGE_FADING_CLASS);
+    const remove = () => badge.remove();
+    badge.addEventListener("transitionend", remove, { once: true });
+    window.setTimeout(remove, KEY_BADGE_FADE_MS + 200);
+  }
+
   // Shows a small bubble with the key on every viewer button that has a keybind.
   function syncKeyBadges(viewer) {
-    if (!viewer) {
+    let targets;
+    let hideAt;
+    if (viewer) {
+      pageKeyBadgeHideAt = null;
+      if (keyBadgeHideAt === null) {
+        keyBadgeHideAt = startKeyBadgeTimer(KEY_BADGE_VISIBLE_MS);
+      }
+      hideAt = keyBadgeHideAt;
+      targets = Date.now() < hideAt ? getKeyBadgeTargets(viewer) : new Map();
+    } else {
       keyBadgeHideAt = null;
-    } else if (keyBadgeHideAt === null) {
-      keyBadgeHideAt = Date.now() + KEY_BADGE_VISIBLE_MS;
-      window.setTimeout(scheduleSynchronization, KEY_BADGE_VISIBLE_MS + 50);
-      window.setTimeout(scheduleSynchronization, KEY_BADGE_VISIBLE_MS + KEY_BADGE_FADE_MS + 50);
-    }
-
-    // After the visible time the bubbles fade out and are removed once the fade has finished.
-    const now = Date.now();
-    const fading = Boolean(viewer) && now >= keyBadgeHideAt;
-    let targets = new Map();
-    if (!viewer) {
       targets = getPageKeyBadgeTargets();
-    } else if (now < keyBadgeHideAt + KEY_BADGE_FADE_MS) {
-      targets = getKeyBadgeTargets(viewer);
+      if (targets.size && pageKeyBadgeHideAt === null) {
+        pageKeyBadgeHideAt = startKeyBadgeTimer(KEY_BADGE_PAGE_VISIBLE_MS);
+      }
+      hideAt = pageKeyBadgeHideAt;
     }
 
-    for (const badge of document.querySelectorAll(`.${KEY_BADGE_CLASS}`)) {
+    // Once the visible time is over, the bubbles that are still there fade out and no new ones appear.
+    if (hideAt !== null && Date.now() >= hideAt) {
+      document.querySelectorAll(`.${KEY_BADGE_CLASS}`).forEach(fadeOutKeyBadge);
+      return;
+    }
+
+    for (const badge of document.querySelectorAll(`.${KEY_BADGE_CLASS}:not(.${KEY_BADGE_FADING_CLASS})`)) {
       if (targets.get(badge.parentElement)?.label !== badge.textContent) {
         badge.remove();
       }
     }
 
     for (const [button, { label, atIcon, offsetX, alignTo, rightEdge, fixed }] of targets) {
-      let badge = button.querySelector(`:scope > .${KEY_BADGE_CLASS}`);
+      let badge = button.querySelector(`:scope > .${KEY_BADGE_CLASS}:not(.${KEY_BADGE_FADING_CLASS})`);
       if (!badge) {
         if (!fixed && window.getComputedStyle(button).position === "static") {
           button.style.position = "relative";
@@ -1689,7 +1870,6 @@
         button.append(badge);
       }
 
-      badge.classList.toggle(KEY_BADGE_FADING_CLASS, fading);
       if (fixed) {
         placeKeyBadgeFixed(button, badge, atIcon, offsetX);
       } else {
@@ -1805,6 +1985,7 @@
       clearSuggestionMenuAnchor();
     } else {
       autoplayCurrentMedia(viewer);
+      syncAutoplayButton(viewer);
       syncMarkerInputs(viewer);
       syncSubjectAvatars();
       syncSuggestionMenuPosition();
@@ -1870,7 +2051,7 @@
   }
 
   async function start() {
-    const settings = await chrome.storage.local.get(["serverOrigin", "videoVolume"]);
+    const settings = await chrome.storage.local.get(["serverOrigin", "videoVolume", AUTOPLAY_ENABLED_KEY]);
     if (settings.serverOrigin !== window.location.origin) {
       return;
     }
@@ -1878,9 +2059,20 @@
       preferredVolume = settings.videoVolume;
       lastPersistedVolume = settings.videoVolume;
     }
+    if (typeof settings[AUTOPLAY_ENABLED_KEY] === "boolean") {
+      autoplayEnabled = settings[AUTOPLAY_ENABLED_KEY];
+    }
 
+    // Registered first so that other handlers cannot stop these events before they are seen.
+    for (const type of ["pointerdown", "click", "keydown"]) {
+      window.addEventListener(type, markPlayIntent, true);
+    }
     window.addEventListener("keydown", handleKeydown, true);
+    window.addEventListener("play", suppressNativeAutoplay, true);
     chrome.storage.onChanged.addListener((changes, areaName) => {
+      if (areaName === "local" && typeof changes[AUTOPLAY_ENABLED_KEY]?.newValue === "boolean") {
+        setAutoplayEnabled(changes[AUTOPLAY_ENABLED_KEY].newValue, false);
+      }
       if (areaName !== "local" || !changes.videoVolume) {
         return;
       }
@@ -2008,7 +2200,9 @@
         ) {
           return false;
         }
-        return !element?.closest(`.${CONTROL_CLASS}, .${MARKER_INPUTS_CLASS}, .${KEY_BADGE_CLASS}`);
+        return !element?.closest(
+          `.${CONTROL_CLASS}, .${MARKER_INPUTS_CLASS}, .${AUTOPLAY_BUTTON_CLASS}, .${KEY_BADGE_CLASS}`,
+        );
       });
 
       if (pageChanged) {

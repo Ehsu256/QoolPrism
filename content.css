@@ -173,3 +173,7 @@
 .photoprism-enhancements-key-badge--fading {
   opacity: 0;
 }
+
+.photoprism-enhancements-autoplay-toggle[aria-pressed="false"] .pswp__icn {
+  opacity: 0.55;
+}
