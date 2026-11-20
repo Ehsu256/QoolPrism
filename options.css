@@ -1,0 +1,95 @@
+:root {
+  color-scheme: light dark;
+  font: 16px/1.5 system-ui, sans-serif;
+}
+
+body {
+  margin: 0;
+  width: 360px;
+  /* max-width: 300vw; */
+  box-sizing: border-box;
+  padding: 20px;
+  color: CanvasText;
+  background: Canvas;
+}
+
+main {
+  width: 100%;
+}
+
+h1 {
+  margin: 0 0 8px;
+  font-size: 1.3rem;
+}
+
+form {
+  display: grid;
+  gap: 12px;
+  margin-top: 20px;
+}
+
+label {
+  font-weight: 600;
+}
+
+input {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid GrayText;
+  border-radius: 6px;
+  color: CanvasText;
+  background: Canvas;
+  font: inherit;
+}
+
+.hint {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+button {
+  justify-self: start;
+  padding: 9px 16px;
+  border: 0;
+  border-radius: 6px;
+  color: white;
+  background: #315eb8;
+  font: inherit;
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.configured-server {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid GrayText;
+}
+
+.configured-server h2 {
+  margin: 0 0 4px;
+  font-size: 1.1rem;
+}
+
+.configured-server p {
+  overflow-wrap: anywhere;
+}
+
+.secondary-button {
+  color: CanvasText;
+  background: transparent;
+  border: 1px solid GrayText;
+}
+
+.status {
+  min-height: 1.5em;
+  margin: 12px 0 0;
+}
+
+.status[data-error="true"] {
+  color: #c62828;
+}

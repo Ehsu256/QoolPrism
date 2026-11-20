@@ -1,0 +1,175 @@
+.photoprism-enhancements-volume {
+  position: fixed;
+  z-index: 2147483647;
+  display: grid;
+  place-items: center;
+  box-sizing: border-box;
+  width: 40px;
+  height: 136px;
+  padding: 10px 0;
+  color-scheme: dark;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 120ms ease, visibility 120ms ease;
+}
+
+.photoprism-enhancements-volume[data-open="true"] {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+}
+
+.photoprism-enhancements-volume__slider:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: 2px;
+}
+
+.photoprism-enhancements-volume__slider {
+  width: 20px;
+  height: 112px;
+  margin: 0;
+  accent-color: #fff;
+  writing-mode: vertical-lr;
+  direction: rtl;
+}
+
+.photoprism-enhancements-gallery-highlighted {
+  outline: 5px solid #b389ff !important;
+  outline-offset: -5px;
+}
+
+.result.photoprism-enhancements-gallery-highlighted {
+  position: relative;
+  isolation: isolate;
+}
+
+.result.photoprism-enhancements-gallery-highlighted::after {
+  position: absolute;
+  z-index: 2147483647;
+  inset: 0;
+  border: 5px solid #b389ff;
+  outline-offset: -7px;
+  content: "";
+  pointer-events: none;
+}
+
+.photoprism-enhancements-marker-inputs {
+  position: absolute;
+  z-index: 3;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+
+.photoprism-enhancements-marker-input {
+  position: absolute;
+  box-sizing: border-box;
+  width: 150px;
+  max-width: 60vw;
+  padding: 3px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  /* border-radius: 6px; */
+  color: #fff;
+  background: rgba(20, 20, 20, 0.78);
+  font: 13px/1.35 system-ui, sans-serif;
+  text-align: center;
+  text-overflow: ellipsis;
+  transform: translateX(-50%);
+  cursor: text;
+  outline: none;
+  pointer-events: auto;
+}
+
+.photoprism-enhancements-marker-input::placeholder {
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.photoprism-enhancements-marker-input[data-named="true"] {
+  background: rgba(20, 20, 20, 0.6);
+  cursor: default;
+}
+
+.photoprism-enhancements-marker-input[data-active="true"] {
+  border-color: #b389ff;
+  box-shadow: 0 0 0 1px #b389ff;
+}
+
+.photoprism-enhancements-has-marker-inputs .p-meta-face-markers__label {
+  display: none;
+}
+
+.photoprism-enhancements-subject-avatar {
+  flex: none;
+  width: 46px;
+  height: 46px;
+  margin-right: 12px;
+  border-radius: 10%;
+  background: rgba(128, 128, 128, 0.25);
+  object-fit: cover;
+}
+
+[data-photoprism-enhancements-menu] {
+  top: var(--photoprism-enhancements-menu-top, auto) !important;
+  bottom: var(--photoprism-enhancements-menu-bottom, auto) !important;
+  left: var(--photoprism-enhancements-menu-left, auto) !important;
+  width: var(--photoprism-enhancements-menu-width, auto) !important;
+  min-width: var(--photoprism-enhancements-menu-width, 0) !important;
+  max-width: var(--photoprism-enhancements-menu-width, none) !important;
+  max-height: var(--photoprism-enhancements-menu-max-height, none) !important;
+  transform: none !important;
+}
+
+.photoprism-enhancements-marker-unassign {
+  position: absolute;
+  box-sizing: border-box;
+  display: grid;
+  place-items: center;
+  min-width: 28px;
+  padding: 0 6px;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  color: #fff;
+  background: rgba(20, 20, 20, 0.78);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+/* .photoprism-enhancements-marker-unassign:hover { */
+  /* border-color: #b389ff; */
+/* } */
+
+[data-photoprism-enhancements-context-menu] {
+  top: var(--photoprism-enhancements-context-top, auto) !important;
+  bottom: auto !important;
+  left: var(--photoprism-enhancements-context-left, auto) !important;
+  right: auto !important;
+  transform: none !important;
+}
+
+.photoprism-enhancements-key-badge {
+  position: absolute;
+  z-index: 1;
+  top: 2px;
+  right: 2px;
+  box-sizing: border-box;
+  /* min-width: 16px; */
+  height: 18px;
+  padding: 0 4px;
+  border: 2px solid rgb(255, 255, 255);
+  border-radius: 10px;
+  color: rgba(255, 255, 255);
+  background: rgb(90, 64, 138);
+  font: 700 14px/15px system-ui, sans-serif;
+  text-align: center;
+  text-transform: none;
+  pointer-events: none;
+  transition: opacity 500ms ease-out 200ms;
+}
+
+.photoprism-enhancements-key-badge--fading {
+  opacity: 0;
+}
