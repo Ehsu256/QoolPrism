@@ -2,7 +2,7 @@
 
 UI enhancements for PhotoPrism.
 
-# AI usage
+## AI usage
 
 Most of the code was generated using AI. Free versions of Github Copilot and Claude (Sonnet 5.5) were used.
 
