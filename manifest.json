@@ -6,8 +6,7 @@
   "description": "Additional UI features for PhotoPrism. (https://github.com/photoprism/photoprism)",
   "permissions": [
     "storage",
-    "scripting",
-    "contextMenus"
+    "scripting"
   ],
   "optional_host_permissions": [
     "http://*/*",

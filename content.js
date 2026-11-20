@@ -43,10 +43,30 @@
   const MEDIA_SELECTOR = "img, video";
   const CONTROL_CLASS = "photoprism-enhancements-volume";
   const AUTOPLAY_BUTTON_CLASS = "photoprism-enhancements-autoplay-toggle";
+  const RANDOM_BUTTON_CLASS = "photoprism-enhancements-random-button";
+  const SEARCH_BUTTON_CLASS = "photoprism-enhancements-search-button";
+  const SEARCH_MENU_CLASS = "photoprism-enhancements-search-menu";
   const AUTOPLAY_ENABLED_KEY = "autoplayEnabled";
   const CLOSE_BUTTON_SELECTOR = ".pswp__top-bar .pswp__button--close-button";
   const AUTOPLAY_ICON_ON = "M10,16.5V7.5L16,12M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2Z";
   const AUTOPLAY_ICON_OFF = "M10,16.5L16,12L10,7.5V16.5M12,2A10,10 0 0,1 22,12A10,10 0 0,1 12,22A10,10 0 0,1 2,12A10,10 0 0,1 12,2M12,4A8,8 0 0,0 4,12A8,8 0 0,0 12,20A8,8 0 0,0 20,12A8,8 0 0,0 12,4Z";
+  // Material Design Icons "shuffle".
+  const RANDOM_ICON = "M14.83,13.41L13.42,14.82L16.55,17.95L14.5,20H20V14.5L17.96,16.54L14.83,13.41M14.5,4L16.54,6.04L4,18.59L5.41,20L17.96,7.46L20,9.5V4M10.59,9.17L5.41,4L4,5.41L9.17,10.58L10.59,9.17Z";
+  // Material Design Icons "magnify".
+  const SEARCH_ICON = "M9.5,3A6.5,6.5 0 0,1 16,9.5C16,11.11 15.41,12.59 14.44,13.73L14.71,14H15.5L20.5,19L19,20.5L14,15.5V14.71L13.73,14.44C12.59,15.41 11.11,16 9.5,16A6.5,6.5 0 0,1 3,9.5A6.5,6.5 0 0,1 9.5,3M9.5,5C7,5 5,7 5,9.5C5,12 7,14 9.5,14C12,14 14,12 14,9.5C14,7 12,5 9.5,5Z";
+  // The ids match the image search services in background.js.
+  const IMAGE_SEARCH_OPTIONS = [
+    {
+      id: "yandex-image-search",
+      label: "Yandex",
+      icon: "https://yastatic.net/s3/home/services/all/all_lite/Images_v4.svg",
+    },
+    {
+      id: "iqdb-image-search",
+      label: "IQDB",
+      icon: "https://iqdb.org/favicon.ico",
+    },
+  ];
   const PLAY_BUTTON_SELECTOR = ".pswp__play";
   const MARKER_CONFIRM_SELECTOR = ".p-meta-face-markers__confirm .p-meta-face-markers__btn--confirm";
   const MARKER_REMOVE_SELECTOR = ".p-meta-face-markers__remove-confirm .p-meta-face-markers__btn--remove";
@@ -670,6 +690,12 @@
   }
 
   function handleKeydown(event) {
+    if (event.key === "Escape" && closeSearchMenu()) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+
     if (
       event.key === "Escape"
       && event.target instanceof HTMLInputElement
@@ -1102,7 +1128,199 @@
     button.querySelector("path")?.setAttribute("d", autoplayEnabled ? AUTOPLAY_ICON_ON : AUTOPLAY_ICON_OFF);
   }
 
-  // Adds the autoplay toggle right next to the viewer's close button.
+  // Same look as the autoplay button. Opens a random image, like the R key.
+  function createRandomButton() {
+    const svgNamespace = "http://www.w3.org/2000/svg";
+    const iconId = "photoprism-enhancements-icn-random";
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `pswp__button pswp__button--mdi ${RANDOM_BUTTON_CLASS}`;
+    button.title = "Random image";
+    button.setAttribute("aria-label", "Random image");
+
+    const icon = document.createElementNS(svgNamespace, "svg");
+    icon.setAttribute("class", "pswp__icn");
+    icon.setAttribute("viewBox", "0 0 24 24");
+    icon.setAttribute("width", "24");
+    icon.setAttribute("height", "24");
+    icon.setAttribute("aria-hidden", "true");
+    const shadow = document.createElementNS(svgNamespace, "use");
+    shadow.setAttribute("class", "pswp__icn-shadow");
+    shadow.setAttribute("href", `#${iconId}`);
+    const path = document.createElementNS(svgNamespace, "path");
+    path.setAttribute("id", iconId);
+    path.setAttribute("d", RANDOM_ICON);
+    icon.append(shadow, path);
+    button.append(icon);
+
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openRandomPhoto().catch((error) => {
+        console.error("Could not open a random PhotoPrism image.", error);
+      });
+      button.blur();
+    });
+    return button;
+  }
+
+  // Returns the video (once it shows a frame) or the biggest image of the slide that is shown.
+  function getCurrentSlideMedia(viewer) {
+    const holder = viewer.querySelector('.pswp__item[aria-hidden="false"]') || viewer;
+
+    const video = Array.from(holder.querySelectorAll("video"))
+      .find((candidate) => isDisplayed(candidate) && candidate.videoWidth > 0 && candidate.readyState >= 2);
+    if (video) {
+      return video;
+    }
+
+    const images = Array.from(holder.querySelectorAll("img")).filter(isVisibleMedia);
+    const loaded = images.filter((image) => !image.classList.contains("pswp__img--placeholder"));
+    return (loaded.length ? loaded : images)
+      .sort((left, right) => (right.naturalWidth * right.naturalHeight) - (left.naturalWidth * left.naturalHeight))[0]
+      || null;
+  }
+
+  // Everything before sendMessage runs synchronously, so that the click still counts as a user
+  // gesture when the extension asks for access to the search site.
+  async function searchCurrentMedia(service) {
+    const viewer = getViewer();
+    const media = viewer && getCurrentSlideMedia(viewer);
+    if (!media) {
+      throw new Error("No image or video is shown in the viewer.");
+    }
+
+    let payload;
+    if (media instanceof HTMLVideoElement) {
+      const canvas = document.createElement("canvas");
+      canvas.width = media.videoWidth;
+      canvas.height = media.videoHeight;
+      canvas.getContext("2d").drawImage(media, 0, 0);
+      payload = {
+        mediaType: "video",
+        dataUrl: canvas.toDataURL("image/jpeg", 0.95),
+        fileName: "photoprism-video-frame.jpg",
+      };
+    } else {
+      payload = { mediaType: "image", imageUrl: media.currentSrc || media.src };
+    }
+
+    const response = await chrome.runtime.sendMessage({ type: "image-search", service, ...payload });
+    if (!response?.ok) {
+      throw new Error(response?.error || "The image search could not be started.");
+    }
+  }
+
+  let searchMenuHideTimer = null;
+
+  // Closes the image search dropdown. Returns true when it was open.
+  function closeSearchMenu() {
+    window.clearTimeout(searchMenuHideTimer);
+    const menu = document.querySelector(`.${SEARCH_MENU_CLASS}`);
+    menu?.remove();
+    return Boolean(menu);
+  }
+
+  function cancelSearchMenuHide() {
+    window.clearTimeout(searchMenuHideTimer);
+  }
+
+  // Short delay, so the pointer can cross the gap between the button and the dropdown.
+  function scheduleSearchMenuHide() {
+    window.clearTimeout(searchMenuHideTimer);
+    searchMenuHideTimer = window.setTimeout(closeSearchMenu, 140);
+  }
+
+  function openSearchMenu(button) {
+    if (document.querySelector(`.${SEARCH_MENU_CLASS}`)) {
+      return;
+    }
+
+    const menu = document.createElement("div");
+    menu.className = SEARCH_MENU_CLASS;
+    menu.setAttribute("role", "menu");
+    menu.addEventListener("pointerenter", cancelSearchMenuHide);
+    menu.addEventListener("pointerleave", scheduleSearchMenuHide);
+
+    for (const { id, label, icon } of IMAGE_SEARCH_OPTIONS) {
+      const item = document.createElement("button");
+      item.type = "button";
+      item.className = `${SEARCH_MENU_CLASS}__item`;
+      item.setAttribute("role", "menuitem");
+      const logo = document.createElement("img");
+      logo.className = `${SEARCH_MENU_CLASS}__icon`;
+      logo.src = icon;
+      logo.alt = "";
+      logo.draggable = false;
+      item.append(logo, document.createTextNode(label));
+      item.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        closeSearchMenu();
+        searchCurrentMedia(id).catch((error) => {
+          const message = error instanceof Error ? error.message : "An unexpected error occurred.";
+          console.error("Could not search this image.", error);
+          window.alert(`${label} image search failed: ${message}`);
+        });
+      });
+      menu.append(item);
+    }
+
+    document.body.append(menu);
+    const rect = button.getBoundingClientRect();
+    const left = Math.max(8, Math.min(
+      rect.left + (rect.width - menu.offsetWidth) / 2,
+      window.innerWidth - menu.offsetWidth - 8,
+    ));
+    menu.style.left = `${Math.round(left)}px`;
+    menu.style.top = `${Math.round(rect.bottom + 4)}px`;
+  }
+
+  // Same look as the autoplay button. Opens a dropdown with the image search services.
+  function createSearchButton() {
+    const svgNamespace = "http://www.w3.org/2000/svg";
+    const iconId = "photoprism-enhancements-icn-search";
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `pswp__button pswp__button--mdi ${SEARCH_BUTTON_CLASS}`;
+    button.title = "Image search";
+    button.setAttribute("aria-label", "Image search");
+    button.setAttribute("aria-haspopup", "menu");
+
+    const icon = document.createElementNS(svgNamespace, "svg");
+    icon.setAttribute("class", "pswp__icn");
+    icon.setAttribute("viewBox", "0 0 24 24");
+    icon.setAttribute("width", "24");
+    icon.setAttribute("height", "24");
+    icon.setAttribute("aria-hidden", "true");
+    const shadow = document.createElementNS(svgNamespace, "use");
+    shadow.setAttribute("class", "pswp__icn-shadow");
+    shadow.setAttribute("href", `#${iconId}`);
+    const path = document.createElementNS(svgNamespace, "path");
+    path.setAttribute("id", iconId);
+    path.setAttribute("d", SEARCH_ICON);
+    icon.append(shadow, path);
+    button.append(icon);
+
+    // The dropdown opens on hover. Clicking also opens it, for touch screens.
+    button.addEventListener("pointerenter", () => {
+      cancelSearchMenuHide();
+      openSearchMenu(button);
+    });
+    button.addEventListener("pointerleave", scheduleSearchMenuHide);
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      cancelSearchMenuHide();
+      openSearchMenu(button);
+      button.blur();
+    });
+    return button;
+  }
+
+  // Adds the autoplay toggle right next to the viewer's close button,
+  // the random image button right next to the autoplay toggle,
+  // and the image search button right before (to the left of) the autoplay toggle.
   function syncAutoplayButton(viewer) {
     const closeButton = viewer.querySelector(CLOSE_BUTTON_SELECTOR);
     if (!closeButton) {
@@ -1115,6 +1333,16 @@
       closeButton.after(button);
     }
     updateAutoplayButton(button);
+
+    let randomButton = closeButton.parentElement.querySelector(`.${RANDOM_BUTTON_CLASS}`);
+    if (!randomButton) {
+      randomButton = createRandomButton();
+      button.after(randomButton);
+    }
+
+    if (!closeButton.parentElement.querySelector(`.${SEARCH_BUTTON_CLASS}`)) {
+      button.before(createSearchButton());
+    }
   }
 
   function setAutoplayEnabled(enabled, persist = true) {
@@ -1980,6 +2208,7 @@
     syncContextMenuPosition(viewer);
     syncKeyBadges(viewer);
     if (!viewer) {
+      closeSearchMenu();
       clearHighlightedFace();
       syncMarkerInputs(null);
       clearSuggestionMenuAnchor();
@@ -2087,6 +2316,14 @@
       setMediaVolume(currentVideos, savedVolume);
       updateControlValues();
     });
+    document.addEventListener("pointerdown", (event) => {
+      if (
+        event.target instanceof Element
+        && !event.target.closest(`.${SEARCH_MENU_CLASS}, .${SEARCH_BUTTON_CLASS}`)
+      ) {
+        closeSearchMenu();
+      }
+    }, true);
     window.addEventListener("resize", updatePopoverPosition);
     window.addEventListener("scroll", updatePopoverPosition, true);
     // Bubbles positioned on the screen have to follow their button when the page or side panel scrolls.

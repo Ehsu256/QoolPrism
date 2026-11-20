@@ -11,26 +11,6 @@ const IQDB_IMAGE_MENU_ID = "iqdb-image-search";
 const IQDB_MAX_UPLOAD_BYTES = 8 * 1024 * 1024;
 const IQDB_MAX_DIMENSION = 7500;
 
-async function syncImageSearchMenus(serverOrigin) {
-  await chrome.contextMenus.removeAll();
-  if (!serverOrigin) {
-    return;
-  }
-
-  for (const [id, service] of Object.entries(IMAGE_SEARCH_SERVICES)) {
-    chrome.contextMenus.create({
-      id,
-      title: service.title,
-      contexts: ["image", "video"],
-      documentUrlPatterns: [`${serverOrigin}/*`],
-    }, () => {
-      if (chrome.runtime.lastError) {
-        console.error(`Could not create the ${service.title} context menu.`, chrome.runtime.lastError);
-      }
-    });
-  }
-}
-
 function getServerConfig(value) {
   return PhotoPrismExtensionUtils.parseServerUrl(value);
 }
@@ -68,7 +48,6 @@ async function syncConfiguredServer() {
 
   if (!settings[SERVER_ORIGIN_KEY] || !settings[PERMISSION_PATTERN_KEY]) {
     await unregisterContentScript();
-    await syncImageSearchMenus(null);
     return;
   }
 
@@ -83,13 +62,11 @@ async function syncConfiguredServer() {
 
   if (!granted) {
     await unregisterContentScript();
-    await syncImageSearchMenus(null);
     return;
   }
 
   await unregisterContentScript();
   await registerContentScript(config.permissionPattern);
-  await syncImageSearchMenus(config.serverOrigin);
 }
 
 async function configureServer(value) {
@@ -129,7 +106,6 @@ async function configureServer(value) {
     [SERVER_ORIGIN_KEY]: config.serverOrigin,
     [PERMISSION_PATTERN_KEY]: config.permissionPattern,
   });
-  await syncImageSearchMenus(config.serverOrigin);
 
   let warning;
   const previousPattern = previous[PERMISSION_PATTERN_KEY];
@@ -153,7 +129,6 @@ async function clearServer() {
     SERVER_ORIGIN_KEY,
     PERMISSION_PATTERN_KEY,
   ]);
-  await syncImageSearchMenus(null);
 
   if (settings[PERMISSION_PATTERN_KEY]) {
     const removed = await chrome.permissions.remove({
@@ -168,10 +143,6 @@ async function clearServer() {
   }
 
   return {};
-}
-
-function getImagePermissionPattern(imageUrl) {
-  return `${imageUrl.protocol}//${imageUrl.hostname}/*`;
 }
 
 function getImageFileName(imageUrl) {
@@ -454,25 +425,6 @@ function fetchImageFromTab(tabId, frameId, imageUrl) {
   });
 }
 
-function fetchVideoFrameFromTab(tabId, frameId, videoUrl) {
-  return new Promise((resolve, reject) => {
-    chrome.tabs.sendMessage(
-      tabId,
-      { type: "capture-video-frame-for-yandex", videoUrl },
-      { frameId },
-      (response) => {
-        if (chrome.runtime.lastError) {
-          reject(new Error("Could not access the selected video. Reload the PhotoPrism tab and try again."));
-        } else if (!response?.ok || !response.dataUrl) {
-          reject(new Error(response?.error || "Could not capture the selected video's current frame."));
-        } else {
-          resolve(response);
-        }
-      },
-    );
-  });
-}
-
 function waitForTabToLoad(tabId) {
   return new Promise((resolve, reject) => {
     let timeout;
@@ -666,6 +618,35 @@ const IMAGE_SEARCH_SERVICES = {
   },
 };
 
+// Opens the search site in a new tab and uploads the image there. The media is either
+// an image URL on the PhotoPrism server or the data URL of a captured video frame.
+function startImageSearch(service, tabId, media) {
+  chrome.tabs.create({ url: service.url }, (searchTab) => {
+    if (chrome.runtime.lastError || !searchTab?.id) {
+      showImageSearchError(
+        tabId,
+        chrome.runtime.lastError?.message || `Could not open ${service.name}.`,
+        service.title,
+      );
+      return;
+    }
+
+    const pageReady = waitForTabToLoad(searchTab.id);
+    Promise.all([
+      pageReady,
+      media.dataUrl
+        ? Promise.resolve({ ok: true, dataUrl: media.dataUrl, fileName: media.fileName })
+        : fetchImageFromTab(tabId, 0, media.imageUrl),
+    ])
+      .then(async ([, imageData]) => service.upload(searchTab.id, await service.prepare(imageData)))
+      .catch(async (error) => {
+        await pageReady.catch(() => {});
+        const message = error instanceof Error ? error.message : "An unexpected error occurred.";
+        showImageSearchError(searchTab.id, message, service.title);
+      });
+  });
+}
+
 chrome.runtime.onInstalled.addListener(() => {
   syncConfiguredServer().catch((error) => {
     console.error("Could not restore PhotoPrism extension settings.", error);
@@ -782,6 +763,76 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message?.type === "image-search") {
+    if (!Number.isInteger(sender.tab?.id) || sender.frameId !== 0 || !sender.url) {
+      sendResponse({ ok: false, error: "Could not identify the PhotoPrism tab." });
+      return false;
+    }
+
+    let senderOrigin;
+    try {
+      senderOrigin = new URL(sender.url).origin;
+    } catch {
+      sendResponse({ ok: false, error: "Could not verify the PhotoPrism tab origin." });
+      return false;
+    }
+
+    const service = Object.hasOwn(IMAGE_SEARCH_SERVICES, message.service)
+      ? IMAGE_SEARCH_SERVICES[message.service]
+      : null;
+    if (!service) {
+      sendResponse({ ok: false, error: "Unknown image search service." });
+      return false;
+    }
+
+    const isVideo = message.mediaType === "video";
+    let imageUrl = null;
+    if (isVideo) {
+      if (typeof message.dataUrl !== "string" || !message.dataUrl.startsWith("data:image/")) {
+        sendResponse({ ok: false, error: "Could not capture the current video frame." });
+        return false;
+      }
+    } else {
+      try {
+        imageUrl = new URL(message.imageUrl);
+      } catch {
+        sendResponse({ ok: false, error: "Could not identify the selected image." });
+        return false;
+      }
+      if (imageUrl.origin !== senderOrigin) {
+        sendResponse({ ok: false, error: "The selected image is not on the PhotoPrism server." });
+        return false;
+      }
+    }
+
+    // Requested right away, before anything is awaited, so that the click in the viewer
+    // still counts as the user gesture the browser requires for the permission prompt.
+    const permission = chrome.permissions.request({
+      origins: [`${new URL(service.url).origin}/*`],
+    });
+    Promise.all([permission, chrome.storage.local.get(SERVER_ORIGIN_KEY)])
+      .then(([granted, settings]) => {
+        if (settings[SERVER_ORIGIN_KEY] !== senderOrigin) {
+          throw new Error("This tab is not the configured PhotoPrism server.");
+        }
+        if (!granted) {
+          throw new Error(`Allow access to ${service.name} to upload the selected ${isVideo ? "video frame" : "image"}.`);
+        }
+
+        startImageSearch(service, sender.tab.id, {
+          imageUrl: imageUrl?.href,
+          dataUrl: isVideo ? message.dataUrl : null,
+          fileName: typeof message.fileName === "string" ? message.fileName : "photoprism-video-frame.jpg",
+        });
+        sendResponse({ ok: true });
+      })
+      .catch((error) => {
+        sendResponse({ ok: false, error: error instanceof Error ? error.message : "An unexpected error occurred." });
+      });
+
+    return true;
+  }
+
   if (
     ["open-random-photo", "get-gallery-media", "open-gallery-media", "open-gallery-cover"]
       .includes(message?.type)
@@ -876,77 +927,4 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     });
 
   return true;
-});
-
-chrome.contextMenus.onClicked.addListener((info, tab) => {
-  const service = IMAGE_SEARCH_SERVICES[info.menuItemId];
-  if (
-    !service
-    || !["image", "video"].includes(info.mediaType)
-    || !tab
-    || !Number.isInteger(tab.id)
-  ) {
-    return;
-  }
-
-  let mediaUrl;
-  try {
-    mediaUrl = new URL(info.srcUrl);
-  } catch {
-    return;
-  }
-  if (!["http:", "https:", "blob:"].includes(mediaUrl.protocol)) {
-    return;
-  }
-
-  const isVideo = info.mediaType === "video";
-  let imageUrl;
-  if (!isVideo) {
-    imageUrl = mediaUrl;
-  }
-
-  const origins = [`${new URL(service.url).origin}/*`];
-  if (imageUrl) {
-    origins.push(getImagePermissionPattern(imageUrl));
-  }
-  chrome.permissions.request({ origins }, (granted) => {
-    if (chrome.runtime.lastError) {
-      showImageSearchError(tab.id, chrome.runtime.lastError.message, service.title);
-      return;
-    }
-
-    if (!granted) {
-      const message = isVideo
-        ? `Allow access to ${service.name} to upload the selected video's current frame.`
-        : `Allow access to ${service.name} and the image server to upload the selected image.`;
-      showImageSearchError(tab.id, message, service.title);
-      return;
-    }
-
-    chrome.tabs.create({ url: service.url }, (searchTab) => {
-      if (chrome.runtime.lastError || !searchTab?.id) {
-        showImageSearchError(
-          tab.id,
-          chrome.runtime.lastError?.message || `Could not open ${service.name}.`,
-          service.title,
-        );
-        return;
-      }
-
-      const frameId = Number.isInteger(info.frameId) ? info.frameId : 0;
-      const pageReady = waitForTabToLoad(searchTab.id);
-      Promise.all([
-        pageReady,
-        isVideo
-          ? fetchVideoFrameFromTab(tab.id, frameId, info.srcUrl)
-          : fetchImageFromTab(tab.id, frameId, imageUrl.href),
-      ])
-        .then(async ([, imageData]) => service.upload(searchTab.id, await service.prepare(imageData)))
-        .catch(async (error) => {
-          await pageReady.catch(() => {});
-          const message = error instanceof Error ? error.message : "An unexpected error occurred.";
-          showImageSearchError(searchTab.id, message, service.title);
-        });
-    });
-  });
 });
