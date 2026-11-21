@@ -195,20 +195,11 @@ function handleGalleryMediaInPage(mediaUid, listOnly = false) {
 
   const visited = new Set();
   let gallery;
-  let photoViewer;
   function findGallery(vnode, depth) {
     if (!vnode || typeof vnode !== "object" || depth > 100 || visited.has(vnode)) {
       return;
     }
     visited.add(vnode);
-
-    const componentInstance = vnode.component;
-    if (
-      componentInstance
-      && (componentInstance.type?.name === "PLightbox" || componentInstance.type?.__name === "PLightbox")
-    ) {
-      photoViewer = componentInstance;
-    }
 
     if (vnode.el === result) {
       for (let component = vnode.ctx; component; component = component.parent) {
@@ -236,12 +227,6 @@ function handleGalleryMediaInPage(mediaUid, listOnly = false) {
   findGallery(root, 0);
 
   const photos = gallery?.proxy?.results;
-  const mediaIndexes = Array.isArray(photos) ? photos.reduce((indexes, photo, index) => {
-    if (typeof photo?.UID === "string") {
-      indexes.push(index);
-    }
-    return indexes;
-  }, []) : [];
 
   if (listOnly) {
     if (!Array.isArray(photos)) {
@@ -256,52 +241,425 @@ function handleGalleryMediaInPage(mediaUid, listOnly = false) {
     return { mediaUids };
   }
 
-  if (photoViewer?.data?.visible && document.querySelector(".p-lightbox[aria-modal='true']")) {
-    const slideshow = photoViewer.proxy?.pswp?.() || photoViewer.data.lightbox;
-    const itemCount = slideshow?.getNumItems?.();
-    const currentIndex = slideshow?.currIndex;
-    if (
-      !slideshow
-      || typeof slideshow.goTo !== "function"
-      || !Number.isInteger(itemCount)
-      || itemCount < 2
-      || !Number.isInteger(currentIndex)
-      || currentIndex < 0
-      || currentIndex >= itemCount
-    ) {
-      throw new Error("The PhotoPrism viewer is not ready to select another media item.");
-    }
-
-    const offset = Math.floor(Math.random() * (itemCount - 1));
-    const randomIndex = offset >= currentIndex ? offset + 1 : offset;
-    slideshow.goTo(randomIndex);
-    return { opened: true };
-  }
-
   if (!Array.isArray(photos)) {
     throw new Error("Could not read the media in PhotoPrism's active gallery.");
   }
 
-  if (typeof mediaUid === "string") {
-    const index = photos.findIndex((photo) => photo.UID === mediaUid);
-    if (index < 0) {
-      throw new Error("The selected media is no longer available in this PhotoPrism gallery.");
-    }
-    if (!gallery.proxy.openPhoto(index)) {
-      throw new Error("PhotoPrism could not open the selected gallery media.");
-    }
-    return { opened: true };
+  if (typeof mediaUid !== "string") {
+    throw new Error("Could not identify the selected gallery media.");
   }
 
-  if (!mediaIndexes.length) {
-    throw new Error("No media are currently available in this PhotoPrism gallery.");
+  const index = photos.findIndex((photo) => photo.UID === mediaUid);
+  if (index < 0) {
+    throw new Error("The selected media is no longer available in this PhotoPrism gallery.");
   }
-  const index = mediaIndexes[Math.floor(Math.random() * mediaIndexes.length)];
   if (!gallery.proxy.openPhoto(index)) {
     throw new Error("PhotoPrism could not open the selected gallery media.");
   }
-
   return { opened: true };
+}
+
+// Runs in the PhotoPrism page. Opens a random media item taken from the whole result set of
+// the current gallery, not just from the items that happen to be loaded. The size of the result
+// set is found through PhotoPrism's API (cached for a few minutes), and a window of media around
+// the random position is fetched from the API and opened in the viewer.
+async function openRandomPhotoInPage() {
+  const WINDOW_SIZE = 100;
+  // More media is loaded when the viewer gets this close to the end of the loaded media.
+  const EDGE_DISTANCE = 25;
+  const MAX_OFFSET = 100000;
+  const COUNT_CACHE_MS = 5 * 60 * 1000;
+  const BUSY_TIMEOUT_MS = 60 * 1000;
+  const REQUEST_TIMEOUT_MS = 15000;
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const lightboxIsOpen = (lightbox) => Boolean(lightbox?.data?.visible)
+    || Boolean(document.querySelector(".p-lightbox[aria-modal='true']"));
+  const lightboxIsBusy = (lightbox) => Boolean(lightbox?.data?.busy || lightbox?.data?.closing);
+  const getSlideshow = (lightbox) => lightbox?.proxy?.pswp?.() || lightbox?.data?.lightbox?.pswp || null;
+  // Resolves to true as soon as the condition is met, or to false after the time is up.
+  const waitUntil = async (condition, timeoutMs) => {
+    const deadline = Date.now() + timeoutMs;
+    while (!condition()) {
+      if (Date.now() > deadline) {
+        return false;
+      }
+      await sleep(50);
+    }
+    return true;
+  };
+
+  const state = window.__qoolprismRandom || (window.__qoolprismRandom = {
+    busySince: 0,
+    key: "",
+    total: 0,
+    countedAt: 0,
+  });
+
+  // Ignore presses while a previous one is still being processed. The timeout makes sure
+  // that a request that never finished cannot block the feature forever.
+  if (state.busySince && Date.now() - state.busySince < BUSY_TIMEOUT_MS) {
+    return { opened: true, skipped: true };
+  }
+  state.busySince = Date.now();
+
+  try {
+    if (
+      window.location.pathname !== "/search"
+      && window.location.pathname !== "/library"
+      && !window.location.pathname.startsWith("/library/")
+    ) {
+      throw new Error("This PhotoPrism page does not contain a photo gallery.");
+    }
+
+    const root = document.querySelector("#app")?._vnode;
+    if (!root) {
+      throw new Error("Could not find PhotoPrism's active gallery.");
+    }
+
+    // Finds the photo gallery page and the viewer (lightbox) component.
+    const visited = new Set();
+    let view = null;
+    let lightbox = null;
+    function findComponents(vnode, depth) {
+      if (
+        !vnode
+        || typeof vnode !== "object"
+        || depth > 100
+        || visited.has(vnode)
+        || (view && lightbox)
+      ) {
+        return;
+      }
+      visited.add(vnode);
+
+      const instance = vnode.component;
+      if (instance) {
+        const type = instance.type;
+        if (!lightbox && (type?.name === "PLightbox" || type?.__name === "PLightbox")) {
+          lightbox = instance;
+        }
+        if (
+          !view
+          && typeof type?.methods?.openPhoto === "function"
+          && typeof instance.proxy?.searchParams === "function"
+          && Array.isArray(instance.proxy?.results)
+        ) {
+          view = instance.proxy;
+        }
+        findComponents(instance.subTree, depth + 1);
+      }
+      if (vnode.suspense) {
+        findComponents(vnode.suspense.activeBranch, depth + 1);
+        findComponents(vnode.suspense.pendingBranch, depth + 1);
+      }
+      if (Array.isArray(vnode.children)) {
+        vnode.children.forEach((child) => findComponents(child, depth + 1));
+      }
+      if (Array.isArray(vnode.dynamicChildren)) {
+        vnode.dynamicChildren.forEach((child) => findComponents(child, depth + 1));
+      }
+    }
+    findComponents(root, 0);
+
+    if (!view) {
+      throw new Error("Could not find PhotoPrism's active photo gallery.");
+    }
+
+    const globals = view.$?.appContext?.config?.globalProperties;
+    const api = view.$api || globals?.$api || window.$api;
+    const events = view.$event || globals?.$event;
+    if (typeof api?.get !== "function" || typeof events?.publish !== "function") {
+      throw new Error("Could not access PhotoPrism's API client.");
+    }
+
+    // The same search that the gallery itself uses, without its paging.
+    const baseParams = { ...view.searchParams() };
+    delete baseParams.count;
+    delete baseParams.offset;
+    const key = JSON.stringify(baseParams);
+
+    async function fetchMedia(offset, count) {
+      const response = await api.get("photos/view", {
+        params: { ...baseParams, offset, count },
+        timeout: REQUEST_TIMEOUT_MS,
+      });
+      return Array.isArray(response?.data) ? response.data : [];
+    }
+
+    // Finds how many media the search has: doubles the offset until it is past the end,
+    // then narrows the end down. The media that are already loaded give a starting point.
+    async function countMedia(loaded) {
+      const exists = async (offset) => (await fetchMedia(offset, 1)).length > 0;
+      let known = loaded - 1;
+      if (known < 0) {
+        if (!(await exists(0))) {
+          return 0;
+        }
+        known = 0;
+      }
+
+      let step = Math.max(loaded, 1);
+      let end;
+      for (;;) {
+        const probe = Math.min(known + step, MAX_OFFSET);
+        if (!(await exists(probe))) {
+          end = probe;
+          break;
+        }
+        known = probe;
+        if (known >= MAX_OFFSET) {
+          return MAX_OFFSET + 1;
+        }
+        step *= 2;
+      }
+
+      while (end - known > 1) {
+        const middle = Math.floor((known + end) / 2);
+        if (await exists(middle)) {
+          known = middle;
+        } else {
+          end = middle;
+        }
+      }
+      return known + 1;
+    }
+
+    let media = [];
+    let randomIndex = 0;
+    let windowStart = 0;
+    for (let attempt = 0; attempt < 2 && !media.length; attempt += 1) {
+      const cacheValid = attempt === 0
+        && state.key === key
+        && state.total > 0
+        && Date.now() - state.countedAt < COUNT_CACHE_MS;
+      if (!cacheValid) {
+        state.total = await countMedia(attempt === 0 ? view.results.length : 0);
+        state.key = key;
+        state.countedAt = Date.now();
+      }
+      if (state.total < 1) {
+        throw new Error("No media are currently available in this PhotoPrism gallery.");
+      }
+
+      randomIndex = Math.floor(Math.random() * state.total);
+      windowStart = Math.max(
+        0,
+        Math.min(randomIndex - Math.floor(WINDOW_SIZE / 2), state.total - WINDOW_SIZE),
+      );
+      media = await fetchMedia(windowStart, WINDOW_SIZE);
+    }
+    if (!media.length) {
+      state.countedAt = 0;
+      throw new Error("PhotoPrism returned no media for the random selection.");
+    }
+    randomIndex = Math.min(randomIndex, windowStart + media.length - 1);
+    const total = state.total;
+
+    // The viewer cannot be given new media while it is open, so close it first and wait
+    // until PhotoPrism has finished cleaning up. Opening too early would let that clean-up
+    // wipe the new media again and leave the viewer unusable until the page is reloaded.
+    if (lightboxIsOpen(lightbox)) {
+      const closing = getSlideshow(lightbox);
+      if (typeof closing?.close !== "function") {
+        throw new Error("The PhotoPrism viewer could not be closed.");
+      }
+
+      let closedEvent = false;
+      const token = events.subscribe?.("lightbox.closed", () => {
+        closedEvent = true;
+      });
+      try {
+        closing.close();
+        if (!(await waitUntil(() => !lightboxIsOpen(lightbox), 5000))) {
+          throw new Error("The PhotoPrism viewer did not close in time.");
+        }
+        await waitUntil(() => closedEvent, 1000);
+      } finally {
+        if (token !== undefined) {
+          events.unsubscribe?.(token);
+        }
+      }
+    }
+    await waitUntil(() => !lightboxIsBusy(lightbox), 3000);
+    await sleep(100);
+
+    const Thumb = lightbox?.proxy?.model?.constructor;
+    const wrap = (items) => (typeof Thumb?.wrap === "function" ? Thumb.wrap(items) : items);
+    let placeholder = null;
+    try {
+      placeholder = typeof Thumb?.notFound === "function" ? Thumb.notFound() : null;
+    } catch {
+      placeholder = null;
+    }
+    if (!placeholder) {
+      placeholder = typeof Thumb === "function" ? new Thumb() : {};
+    }
+
+    // The viewer gets a list as long as the whole result set, so that a position in the list
+    // is a position in the gallery. Only the fetched window holds real media at first, the rest
+    // is filled in while the user navigates (see enableEdgeLoading).
+    const models = new Array(total).fill(placeholder);
+    wrap(media).forEach((model, offset) => {
+      models[windowStart + offset] = model;
+    });
+
+    events.publish("lightbox.open", {
+      models,
+      index: randomIndex,
+      collection: view.model,
+      context: typeof view.getContext === "function" ? view.getContext() : undefined,
+    });
+
+    if (!(await waitUntil(() => lightboxIsOpen(lightbox), 5000))) {
+      throw new Error("The PhotoPrism viewer did not open.");
+    }
+
+    // The slideshow is created a little after the viewer becomes visible.
+    const slideshowReady = await waitUntil(() => {
+      const candidate = getSlideshow(lightbox);
+      return Boolean(candidate?.currSlide) && Number.isInteger(candidate.currIndex);
+    }, 5000);
+    const slideshow = slideshowReady ? getSlideshow(lightbox) : null;
+
+    // Make sure that the viewer really shows the picked media.
+    if (
+      slideshow
+      && slideshow.currIndex !== randomIndex
+      && typeof slideshow.goTo === "function"
+    ) {
+      slideshow.goTo(randomIndex);
+    }
+    console.info("QoolPrism random:", {
+      total,
+      windowStart,
+      windowLength: media.length,
+      target: randomIndex,
+      shown: slideshow?.currIndex,
+    });
+
+    // Loads more media when the viewer gets close to the end of what is loaded.
+    // PhotoPrism pages through its results in "rows", and several rows can end up as one media
+    // item (for example the files of a stack). The row offsets therefore do not match the
+    // positions of the media in the viewer. So the loaded media is extended one page at a time
+    // in the row space, and the new media is placed right next to the loaded media, skipping
+    // anything that is already there. This keeps the viewer free of repeated media.
+    function enableEdgeLoading() {
+      const lists = [lightbox?.proxy?.models, slideshow.options?.dataSource]
+        .filter((list, index, all) => Array.isArray(list) && all.indexOf(list) === index);
+      const picked = media[randomIndex - windowStart];
+      if (
+        !lists.length
+        || slideshow.getNumItems?.() !== total
+        || lists.some((list) => list[randomIndex]?.UID !== picked?.UID)
+      ) {
+        console.warn("QoolPrism random: the viewer's media list could not be extended.");
+        return;
+      }
+
+      const seen = new Set(media.map((item) => item.UID));
+      let loadedStart = windowStart; // Viewer position of the first loaded media.
+      let loadedEnd = windowStart + media.length - 1; // Viewer position of the last loaded media.
+      let fetchedLow = windowStart; // First row offset that was fetched.
+      let fetchedHigh = windowStart + WINDOW_SIZE; // Row offset after the last fetched one.
+      let reachedEnd = false;
+      let loadingForward = false;
+      let loadingBackward = false;
+
+      function place(items, firstPosition) {
+        wrap(items).forEach((model, offset) => {
+          for (const list of lists) {
+            list[firstPosition + offset] = model;
+          }
+        });
+        items.forEach((item) => seen.add(item.UID));
+
+        // Slides that were showing a placeholder pick up the media that arrived.
+        const current = slideshow.currIndex;
+        if (Number.isInteger(current)) {
+          for (let offset = 0; offset < items.length; offset += 1) {
+            if (Math.abs(firstPosition + offset - current) <= 2) {
+              slideshow.refreshSlideContent?.(firstPosition + offset);
+            }
+          }
+        }
+      }
+
+      async function loadForward() {
+        if (loadingForward || reachedEnd) {
+          return;
+        }
+
+        loadingForward = true;
+        try {
+          const offset = fetchedHigh;
+          const items = await fetchMedia(offset, WINDOW_SIZE);
+          fetchedHigh = offset + WINDOW_SIZE;
+          if (!items.length) {
+            reachedEnd = true;
+            return;
+          }
+
+          const fresh = items.filter((item) => !seen.has(item.UID));
+          if (fresh.length) {
+            place(fresh, loadedEnd + 1);
+            loadedEnd += fresh.length;
+          }
+        } catch (error) {
+          console.warn("QoolPrism random: could not load more media.", error);
+        } finally {
+          loadingForward = false;
+        }
+      }
+
+      async function loadBackward() {
+        if (loadingBackward || fetchedLow <= 0) {
+          return;
+        }
+
+        loadingBackward = true;
+        try {
+          const low = Math.max(0, fetchedLow - WINDOW_SIZE);
+          const items = await fetchMedia(low, fetchedLow - low);
+          fetchedLow = low;
+
+          const fresh = items.filter((item) => !seen.has(item.UID));
+          const usable = fresh.slice(Math.max(0, fresh.length - loadedStart));
+          if (usable.length) {
+            place(usable, loadedStart - usable.length);
+            loadedStart -= usable.length;
+          }
+        } catch (error) {
+          console.warn("QoolPrism random: could not load more media.", error);
+        } finally {
+          loadingBackward = false;
+        }
+      }
+
+      function loadNearEdges() {
+        const current = slideshow.currIndex;
+        if (!Number.isInteger(current)) {
+          return;
+        }
+        if (current >= loadedEnd - EDGE_DISTANCE) {
+          loadForward();
+        }
+        if (current <= loadedStart + EDGE_DISTANCE) {
+          loadBackward();
+        }
+      }
+
+      slideshow.on("change", loadNearEdges);
+      loadNearEdges();
+    }
+    if (slideshow && typeof slideshow.on === "function") {
+      enableEdgeLoading();
+    }
+    return { opened: true };
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : String(error) };
+  } finally {
+    state.busySince = 0;
+  }
 }
 
 function openGalleryCoverInPage(coverUid) {
@@ -868,7 +1226,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         : [];
     const func = message.type === "open-gallery-cover"
       ? openGalleryCoverInPage
-      : handleGalleryMediaInPage;
+      : message.type === "open-random-photo"
+        ? openRandomPhotoInPage
+        : handleGalleryMediaInPage;
     chrome.storage.local.get(SERVER_ORIGIN_KEY)
       .then((settings) => {
         if (settings[SERVER_ORIGIN_KEY] !== senderOrigin) {
@@ -889,6 +1249,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         ) {
           sendResponse({ ok: true, mediaUids: results[0].result.mediaUids });
           return;
+        }
+        if (results[0]?.result?.error) {
+          throw new Error(results[0].result.error);
         }
         if (!results[0]?.result?.opened) {
           throw new Error("PhotoPrism did not open a gallery image.");
