@@ -1,6 +1,6 @@
 importScripts("common.js");
 
-const CONTENT_SCRIPT_ID = "photoprism-enhancements";
+const CONTENT_SCRIPT_ID = "qoolprism";
 const SERVER_ORIGIN_KEY = "serverOrigin";
 const PERMISSION_PATTERN_KEY = "permissionPattern";
 const YANDEX_IMAGE_MENU_ID = "yandex-image-search";
@@ -662,10 +662,10 @@ chrome.runtime.onStartup.addListener(() => {
 // Runs in the PhotoPrism page. Captures the people list PhotoPrism loads for the viewer
 // and passes each person's name and cover image hash to the extension.
 function capturePersonThumbsInPage() {
-  if (window.__photoprismEnhancementsPersonCapture) {
+  if (window.__qoolprismPersonCapture) {
     return;
   }
-  window.__photoprismEnhancementsPersonCapture = true;
+  window.__qoolprismPersonCapture = true;
 
   function isPersonListUrl(url) {
     return /\/api\/v1\/subjects\?/.test(url) && /[?&]type=person(&|$)/.test(url);
@@ -684,20 +684,20 @@ function capturePersonThumbsInPage() {
     }
 
     window.postMessage(
-      { source: "photoprism-enhancements", type: "person-thumbs", thumbs },
+      { source: "qoolprism", type: "person-thumbs", thumbs },
       window.location.origin,
     );
   }
 
   const nativeOpen = XMLHttpRequest.prototype.open;
   XMLHttpRequest.prototype.open = function patchedOpen(method, url, ...rest) {
-    this.__photoprismEnhancementsUrl = String(url);
+    this.__qoolprismUrl = String(url);
     return nativeOpen.call(this, method, url, ...rest);
   };
 
   const nativeSend = XMLHttpRequest.prototype.send;
   XMLHttpRequest.prototype.send = function patchedSend(...args) {
-    if (isPersonListUrl(this.__photoprismEnhancementsUrl || "")) {
+    if (isPersonListUrl(this.__qoolprismUrl || "")) {
       this.addEventListener("load", () => {
         try {
           publish(this.responseType === "json" ? this.response : JSON.parse(this.responseText));

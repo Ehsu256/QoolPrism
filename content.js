@@ -1,8 +1,8 @@
-(function installPhotoPrismEnhancements() {
-  if (window.__photoPrismEnhancementsInstalled) {
+(function installQoolPrism() {
+  if (window.__qoolprismInstalled) {
     return;
   }
-  window.__photoPrismEnhancementsInstalled = true;
+  window.__qoolprismInstalled = true;
 
   const {
     isEditableTarget,
@@ -41,11 +41,11 @@
     '[class*="lightbox" i]',
   ].join(", ");
   const MEDIA_SELECTOR = "img, video";
-  const CONTROL_CLASS = "photoprism-enhancements-volume";
-  const AUTOPLAY_BUTTON_CLASS = "photoprism-enhancements-autoplay-toggle";
-  const RANDOM_BUTTON_CLASS = "photoprism-enhancements-random-button";
-  const SEARCH_BUTTON_CLASS = "photoprism-enhancements-search-button";
-  const SEARCH_MENU_CLASS = "photoprism-enhancements-search-menu";
+  const CONTROL_CLASS = "qoolprism-volume";
+  const AUTOPLAY_BUTTON_CLASS = "qoolprism-autoplay-toggle";
+  const RANDOM_BUTTON_CLASS = "qoolprism-random-button";
+  const SEARCH_BUTTON_CLASS = "qoolprism-search-button";
+  const SEARCH_MENU_CLASS = "qoolprism-search-menu";
   const AUTOPLAY_ENABLED_KEY = "autoplayEnabled";
   const CLOSE_BUTTON_SELECTOR = ".pswp__top-bar .pswp__button--close-button";
   const AUTOPLAY_ICON_ON = "M10,16.5V7.5L16,12M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2Z";
@@ -75,30 +75,31 @@
   const PERSON_ROW_SELECTOR = ".p-lightbox-sidebar .metadata__person-row[data-marker-uid]";
   const PERSON_INPUT_SELECTOR = ".meta-inline-marker input:not([type='hidden'])";
   const MARKER_SELECT_SELECTOR = ".p-meta-face-markers__rect, .p-meta-face-markers__label";
-  const MARKER_INPUTS_CLASS = "photoprism-enhancements-marker-inputs";
-  const MARKER_INPUT_CLASS = "photoprism-enhancements-marker-input";
-  const MARKER_UNASSIGN_CLASS = "photoprism-enhancements-marker-unassign";
-  const MARKER_INPUTS_ACTIVE_CLASS = "photoprism-enhancements-has-marker-inputs";
-  const SUBJECT_AVATAR_CLASS = "photoprism-enhancements-subject-avatar";
-  const KEY_BADGE_CLASS = "photoprism-enhancements-key-badge";
-  const KEY_BADGE_FADING_CLASS = "photoprism-enhancements-key-badge--fading";
+  const MARKER_INPUTS_CLASS = "qoolprism-marker-inputs";
+  const MARKER_INPUT_CLASS = "qoolprism-marker-input";
+  const MARKER_UNASSIGN_CLASS = "qoolprism-marker-unassign";
+  const MARKER_INPUTS_ACTIVE_CLASS = "qoolprism-has-marker-inputs";
+  const SUBJECT_AVATAR_CLASS = "qoolprism-subject-avatar";
+  const KEY_BADGE_CLASS = "qoolprism-key-badge";
+  const KEY_BADGE_FADING_CLASS = "qoolprism-key-badge--fading";
   const KEY_BADGE_VISIBLE_MS = 5000;
   const KEY_BADGE_PAGE_VISIBLE_MS = 3000;
+  const KEY_BADGE_SHORTCUT_VISIBLE_MS = 3000;
   // Length of the opacity transition of the bubbles in content.css, including its delay.
   const KEY_BADGE_FADE_MS = 700;
   const CLIPBOARD_MENU_BUTTON_SELECTOR = 'button.action-menu[aria-controls="t-clipboard"]';
-  const CONTEXT_MENU_ATTRIBUTE = "data-photoprism-enhancements-context-menu";
+  const CONTEXT_MENU_ATTRIBUTE = "data-qoolprism-context-menu";
   const CONTEXT_MENU_PROPERTIES = [
-    "--photoprism-enhancements-context-left",
-    "--photoprism-enhancements-context-top",
+    "--qoolprism-context-left",
+    "--qoolprism-context-top",
   ];
-  const MENU_ANCHOR_ATTRIBUTE = "data-photoprism-enhancements-menu";
+  const MENU_ANCHOR_ATTRIBUTE = "data-qoolprism-menu";
   const MENU_ANCHOR_PROPERTIES = [
-    "--photoprism-enhancements-menu-left",
-    "--photoprism-enhancements-menu-top",
-    "--photoprism-enhancements-menu-bottom",
-    "--photoprism-enhancements-menu-width",
-    "--photoprism-enhancements-menu-max-height",
+    "--qoolprism-menu-left",
+    "--qoolprism-menu-top",
+    "--qoolprism-menu-bottom",
+    "--qoolprism-menu-width",
+    "--qoolprism-menu-max-height",
   ];
   const personThumbs = new Map();
   const AUTOPLAY_SETTLE_MS = 0;
@@ -468,7 +469,7 @@
     highlightedGalleryItemUid = uid;
     highlightedGalleryElement = itemElement;
     if (highlightedGalleryElement) {
-      highlightedGalleryElement.classList.add("photoprism-enhancements-gallery-highlighted");
+      highlightedGalleryElement.classList.add("qoolprism-gallery-highlighted");
       if (shouldScroll) {
         highlightedGalleryElement.scrollIntoView({ block: "nearest", inline: "nearest" });
       }
@@ -476,9 +477,9 @@
   }
 
   function clearGalleryHighlight(element) {
-    element.classList.remove("photoprism-enhancements-gallery-highlighted");
-    element.querySelectorAll(".photoprism-enhancements-gallery-highlighted")
-      .forEach((child) => child.classList.remove("photoprism-enhancements-gallery-highlighted"));
+    element.classList.remove("qoolprism-gallery-highlighted");
+    element.querySelectorAll(".qoolprism-gallery-highlighted")
+      .forEach((child) => child.classList.remove("qoolprism-gallery-highlighted"));
   }
 
   function scrollGalleryEdge(direction) {
@@ -689,7 +690,41 @@
     }
   }
 
+  function isLightboxOpen() {
+    const lightbox = document.querySelector(".p-lightbox[aria-modal='true']");
+    return Boolean(lightbox) && isDisplayed(lightbox);
+  }
+
+  function isShowKeyBadgesShortcut(event) {
+    return !event.defaultPrevented
+      && !event.repeat
+      && !event.isComposing
+      && !event.altKey
+      && !event.ctrlKey
+      && !event.metaKey
+      && !event.shiftKey
+      && typeof event.key === "string"
+      && event.key.toLowerCase() === "t"
+      && !isEditableTarget(event.target);
+  }
+
+  // Shows the key bubbles again, in the viewer when it is open and on the page otherwise.
+  function showKeyBadges() {
+    const hideAt = startKeyBadgeTimer(KEY_BADGE_SHORTCUT_VISIBLE_MS);
+    if (getViewer() || isLightboxOpen()) {
+      keyBadgeHideAt = hideAt;
+    } else {
+      pageKeyBadgeHideAt = hideAt;
+    }
+    scheduleSynchronization();
+  }
+
   function handleKeydown(event) {
+    // T keeps doing what it does in the viewer (people editing) and also shows the bubbles.
+    if (isShowKeyBadgesShortcut(event)) {
+      showKeyBadges();
+    }
+
     if (event.key === "Escape" && closeSearchMenu()) {
       event.preventDefault();
       event.stopPropagation();
@@ -1087,7 +1122,7 @@
 
   function createAutoplayButton() {
     const svgNamespace = "http://www.w3.org/2000/svg";
-    const iconId = "photoprism-enhancements-icn-autoplay";
+    const iconId = "qoolprism-icn-autoplay";
     const button = document.createElement("button");
     button.type = "button";
     button.className = `pswp__button pswp__button--mdi ${AUTOPLAY_BUTTON_CLASS}`;
@@ -1131,7 +1166,7 @@
   // Same look as the autoplay button. Opens a random image, like the R key.
   function createRandomButton() {
     const svgNamespace = "http://www.w3.org/2000/svg";
-    const iconId = "photoprism-enhancements-icn-random";
+    const iconId = "qoolprism-icn-random";
     const button = document.createElement("button");
     button.type = "button";
     button.className = `pswp__button pswp__button--mdi ${RANDOM_BUTTON_CLASS}`;
@@ -1279,7 +1314,7 @@
   // Same look as the autoplay button. Opens a dropdown with the image search services.
   function createSearchButton() {
     const svgNamespace = "http://www.w3.org/2000/svg";
-    const iconId = "photoprism-enhancements-icn-search";
+    const iconId = "qoolprism-icn-search";
     const button = document.createElement("button");
     button.type = "button";
     button.className = `pswp__button pswp__button--mdi ${SEARCH_BUTTON_CLASS}`;
@@ -1334,10 +1369,8 @@
     }
     updateAutoplayButton(button);
 
-    let randomButton = closeButton.parentElement.querySelector(`.${RANDOM_BUTTON_CLASS}`);
-    if (!randomButton) {
-      randomButton = createRandomButton();
-      button.after(randomButton);
+    if (!closeButton.parentElement.querySelector(`.${RANDOM_BUTTON_CLASS}`)) {
+      button.after(createRandomButton());
     }
 
     if (!closeButton.parentElement.querySelector(`.${SEARCH_BUTTON_CLASS}`)) {
@@ -1829,11 +1862,11 @@
     );
     const space = above ? rect.top : window.innerHeight - rect.bottom;
     const values = {
-      "--photoprism-enhancements-menu-left": `${Math.round(left - parentRect.left)}px`,
-      "--photoprism-enhancements-menu-top": above ? "auto" : `${Math.round(rect.bottom - parentRect.top + 4)}px`,
-      "--photoprism-enhancements-menu-bottom": above ? `${Math.round(parentRect.bottom - rect.top + 4)}px` : "auto",
-      "--photoprism-enhancements-menu-width": `${Math.round(width)}px`,
-      "--photoprism-enhancements-menu-max-height": `${Math.round(Math.max(120, Math.min(360, space - 16)))}px`,
+      "--qoolprism-menu-left": `${Math.round(left - parentRect.left)}px`,
+      "--qoolprism-menu-top": above ? "auto" : `${Math.round(rect.bottom - parentRect.top + 4)}px`,
+      "--qoolprism-menu-bottom": above ? `${Math.round(parentRect.bottom - rect.top + 4)}px` : "auto",
+      "--qoolprism-menu-width": `${Math.round(width)}px`,
+      "--qoolprism-menu-max-height": `${Math.round(Math.max(120, Math.min(360, space - 16)))}px`,
     };
 
     if (!content.hasAttribute(MENU_ANCHOR_ATTRIBUTE)) {
@@ -1892,6 +1925,7 @@
           .find((button) => /\bzoom\b/i.test(getElementLabel(button))),
       "Z",
     );
+    add(viewer.querySelector(`.${RANDOM_BUTTON_CLASS}`), "R");
     if (getViewerVideos(viewer).length) {
       add(getMuteButton(viewer), "W/S");
     }
@@ -2054,6 +2088,12 @@
 
   // Shows a small bubble with the key on every viewer button that has a keybind.
   function syncKeyBadges(viewer) {
+    // While a new slide (such as a video) is still loading, no viewer is found even though it is open.
+    // That is not a new visit, so nothing is reset.
+    if (!viewer && isLightboxOpen()) {
+      return;
+    }
+
     let targets;
     let hideAt;
     if (viewer) {
@@ -2186,8 +2226,8 @@
 
     const parentRect = content.offsetParent?.getBoundingClientRect() || { left: 0, top: 0 };
     const values = {
-      "--photoprism-enhancements-context-left": `${Math.round(Math.max(8, left) - parentRect.left)}px`,
-      "--photoprism-enhancements-context-top": `${Math.round(Math.max(8, top) - parentRect.top)}px`,
+      "--qoolprism-context-left": `${Math.round(Math.max(8, left) - parentRect.left)}px`,
+      "--qoolprism-context-top": `${Math.round(Math.max(8, top) - parentRect.top)}px`,
     };
 
     if (!content.hasAttribute(CONTEXT_MENU_ATTRIBUTE)) {
@@ -2356,7 +2396,7 @@
       if (
         event.source !== window
         || event.origin !== window.location.origin
-        || data?.source !== "photoprism-enhancements"
+        || data?.source !== "qoolprism"
         || data.type !== "person-thumbs"
         || !data.thumbs
         || typeof data.thumbs !== "object"
@@ -2457,6 +2497,6 @@
   }
 
   start().catch((error) => {
-    console.error("Could not start PhotoPrism enhancements.", error);
+    console.error("Could not start QoolPrism.", error);
   });
 })();
