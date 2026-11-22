@@ -1267,7 +1267,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
-  if (sender.url !== chrome.runtime.getURL("options.html")) {
+  if (sender.url !== chrome.runtime.getURL("popup.html")) {
     return false;
   }
 

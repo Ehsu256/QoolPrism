@@ -4,18 +4,46 @@ const serverForm = document.querySelector("#server-form");
 const serverInput = document.querySelector("#server-url");
 const saveButton = document.querySelector("#save-button");
 const clearButton = document.querySelector("#clear-button");
-const configuredServer = document.querySelector("#configured-server");
-const serverStatus = document.querySelector("#server-status");
-const statusMessage = document.querySelector("#status");
-
-function showStatus(message, isError = false) {
-  statusMessage.textContent = message;
-  statusMessage.dataset.error = String(isError);
-}
+const serverBox = document.querySelector("#server-box");
 
 function setBusy(isBusy) {
   saveButton.disabled = isBusy;
   clearButton.disabled = isBusy;
+}
+
+let serverCheckId = 0;
+
+// Shows whether the PhotoPrism server answers on /api/v1/status.
+async function updateServerStatus(serverOrigin) {
+  const checkId = ++serverCheckId;
+
+  if (!serverOrigin) {
+    serverBox.textContent = "Provide the URL for your PhotoPrism server";
+    return;
+  }
+
+  serverBox.textContent = "Checking PhotoPrism…";
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5000);
+  let accessible = false;
+  try {
+    const response = await fetch(`${serverOrigin}/api/v1/status`, {
+      cache: "no-store",
+      signal: controller.signal,
+    });
+    accessible = response.status === 200;
+  } catch {
+    accessible = false;
+  } finally {
+    clearTimeout(timeout);
+  }
+
+  if (checkId === serverCheckId) {
+    serverBox.textContent = accessible
+      ? "🟢 PhotoPrism is currently accessible 🟢"
+      : "🔴 Couldn't access PhotoPrism 🔴";
+  }
 }
 
 async function refreshConfiguredServer() {
@@ -25,22 +53,13 @@ async function refreshConfiguredServer() {
   ]);
 
   if (!settings.serverOrigin || !settings.permissionPattern) {
-    configuredServer.hidden = true;
+    updateServerStatus(null);
     return;
   }
 
-  configuredServer.hidden = false;
-  serverStatus.textContent = settings.serverOrigin;
   serverInput.value = settings.serverOrigin;
 
-  const granted = await chrome.permissions.contains({
-    origins: [settings.permissionPattern],
-  });
-  showStatus(
-    granted
-      ? "Server access is active. Reload an open PhotoPrism tab to apply the extension."
-      : "Site access is missing. Save the server again to grant access.",
-  );
+  updateServerStatus(settings.serverOrigin);
 }
 
 // Saves the server. The browser's permission prompt closes this popup, which would
@@ -59,7 +78,6 @@ async function saveServer(serverOrigin, requestAccess) {
       });
 
       if (!granted) {
-        showStatus("Site access was not granted. The extension has not been configured.", true);
         return;
       }
     }
@@ -76,11 +94,8 @@ async function saveServer(serverOrigin, requestAccess) {
     await chrome.storage.local.remove(PENDING_SERVER_KEY);
     serverInput.value = serverOrigin;
     await refreshConfiguredServer();
-    if (response.warning) {
-      showStatus(response.warning, true);
-    }
   } catch (error) {
-    showStatus(error instanceof Error ? error.message : "The server could not be configured.", true);
+    console.error("The server could not be configured.", error);
   } finally {
     setBusy(false);
   }
@@ -118,13 +133,12 @@ async function resumePendingServer() {
 
 serverForm.addEventListener("submit", async (event) => {
   event.preventDefault();
-  showStatus("");
 
   let serverOrigin;
   try {
     serverOrigin = PhotoPrismExtensionUtils.parseServerUrl(serverInput.value.trim()).serverOrigin;
   } catch (error) {
-    showStatus(error.message, true);
+    console.error(error);
     return;
   }
 
@@ -133,7 +147,6 @@ serverForm.addEventListener("submit", async (event) => {
 
 clearButton.addEventListener("click", async () => {
   setBusy(true);
-  showStatus("");
 
   try {
     const response = await chrome.runtime.sendMessage({ type: "clear-server" });
@@ -143,10 +156,9 @@ clearButton.addEventListener("click", async () => {
 
     await chrome.storage.local.remove(PENDING_SERVER_KEY);
     serverInput.value = "";
-    configuredServer.hidden = true;
-    showStatus(response.warning || "The server configuration was removed.");
+    updateServerStatus(null);
   } catch (error) {
-    showStatus(error instanceof Error ? error.message : "The server could not be removed.", true);
+    console.error("The server could not be removed.", error);
   } finally {
     setBusy(false);
   }
@@ -166,5 +178,5 @@ clearButton.addEventListener("click", async () => {
     serverInput.value = settings[PENDING_SERVER_KEY];
   }
 })().catch((error) => {
-  showStatus(error instanceof Error ? error.message : "Could not load the saved server.", true);
+  console.error("Could not load the saved server.", error);
 });

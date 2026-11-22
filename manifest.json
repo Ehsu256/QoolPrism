@@ -4,6 +4,9 @@
   "short_name": "QP",
   "version": "1.0",
   "description": "Additional UI features for PhotoPrism. (https://github.com/photoprism/photoprism)",
+  "icons": {
+    "128": "icon.png"
+  },
   "permissions": [
     "storage",
     "scripting"
@@ -17,10 +20,10 @@
   },
   "action": {
     "default_title": "QoolPrism",
-    "default_popup": "options.html"
+    "default_popup": "popup.html"
   },
   "options_ui": {
-    "page": "options.html",
+    "page": "popup.html",
     "open_in_tab": true
   }
 }

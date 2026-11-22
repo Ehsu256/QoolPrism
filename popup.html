@@ -4,12 +4,15 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>QoolPrism</title>
-    <link rel="stylesheet" href="options.css">
+    <link rel="stylesheet" href="popup.css">
   </head>
   <body>
-    <main>
+    <header class="header">
+      <img class="icon" src="icon.png" alt="">
       <h1>QoolPrism</h1>
+    </header>
 
+    <main>
       <form id="server-form">
         <label for="server-url">PhotoPrism server URL</label>
         <input
@@ -20,18 +23,15 @@
           autocomplete="url"
           required
         >
-        <button id="save-button" type="submit">Save server</button>
+        <div class="button-row">
+          <button id="save-button" type="submit">Save server URL</button>
+          <button id="clear-button" class="secondary-button" type="button">Remove server URL</button>
+        </div>
       </form>
 
-      <section id="configured-server" class="configured-server" hidden>
-        <h2>Configured server</h2>
-        <p id="server-status"></p>
-        <button id="clear-button" class="secondary-button" type="button">Remove server</button>
-      </section>
-
-      <p id="status" class="status" role="status" aria-live="polite"></p>
+      <div id="server-box" class="info-box" role="status" aria-live="polite"></div>
     </main>
     <script src="common.js"></script>
-    <script src="options.js"></script>
+    <script src="popup.js"></script>
   </body>
 </html>
