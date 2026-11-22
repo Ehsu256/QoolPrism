@@ -167,11 +167,7 @@
   text-align: center;
   text-transform: none;
   pointer-events: none;
-  transition: opacity 500ms ease-out 200ms;
-}
-
-.qoolprism-key-badge--fading {
-  opacity: 0;
+  transition: none !important;
 }
 
 .qoolprism-autoplay-toggle[aria-pressed="false"] .pswp__icn {

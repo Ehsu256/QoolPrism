@@ -1,10 +1,12 @@
 const PENDING_SERVER_KEY = "pendingServerUrl";
+const KEY_BADGES_ENABLED_KEY = "keyBadgesEnabled";
 
 const serverForm = document.querySelector("#server-form");
 const serverInput = document.querySelector("#server-url");
 const saveButton = document.querySelector("#save-button");
 const clearButton = document.querySelector("#clear-button");
 const serverBox = document.querySelector("#server-box");
+const keyBadgesOption = document.querySelector("#key-badges-option");
 
 function setBusy(isBusy) {
   saveButton.disabled = isBusy;
@@ -179,4 +181,16 @@ clearButton.addEventListener("click", async () => {
   }
 })().catch((error) => {
   console.error("Could not load the saved server.", error);
+});
+
+keyBadgesOption.addEventListener("change", () => {
+  chrome.storage.local.set({ [KEY_BADGES_ENABLED_KEY]: keyBadgesOption.checked }).catch((error) => {
+    console.error("Could not save the keybind bubbles option.", error);
+  });
+});
+
+chrome.storage.local.get(KEY_BADGES_ENABLED_KEY).then((settings) => {
+  keyBadgesOption.checked = settings[KEY_BADGES_ENABLED_KEY] !== false;
+}).catch((error) => {
+  console.error("Could not load the keybind bubbles option.", error);
 });

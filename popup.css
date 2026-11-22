@@ -115,3 +115,37 @@ button:disabled {
   overflow-wrap: anywhere;
   font-size: 14px;
 }
+
+.options {
+  box-sizing: border-box;
+  margin-top: 16px;
+  border-radius: 8px;
+  background: #1c1c1c;
+}
+
+.options summary {
+  padding: 10px 16px;
+  color: #ffffff;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  user-select: none;
+}
+
+.option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 16px 12px;
+  color: #bdbdbd;
+  cursor: pointer;
+}
+
+.option input[type="checkbox"] {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  padding: 0;
+  accent-color: #5b8dff;
+}

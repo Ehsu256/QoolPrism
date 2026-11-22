@@ -81,12 +81,7 @@
   const MARKER_INPUTS_ACTIVE_CLASS = "qoolprism-has-marker-inputs";
   const SUBJECT_AVATAR_CLASS = "qoolprism-subject-avatar";
   const KEY_BADGE_CLASS = "qoolprism-key-badge";
-  const KEY_BADGE_FADING_CLASS = "qoolprism-key-badge--fading";
-  const KEY_BADGE_VISIBLE_MS = 5000;
-  const KEY_BADGE_PAGE_VISIBLE_MS = 3000;
-  const KEY_BADGE_SHORTCUT_VISIBLE_MS = 3000;
-  // Length of the opacity transition of the bubbles in content.css, including its delay.
-  const KEY_BADGE_FADE_MS = 700;
+  const KEY_BADGES_ENABLED_KEY = "keyBadgesEnabled";
   const CLIPBOARD_MENU_BUTTON_SELECTOR = 'button.action-menu[aria-controls="t-clipboard"]';
   const CONTEXT_MENU_ATTRIBUTE = "data-qoolprism-context-menu";
   const CONTEXT_MENU_PROPERTIES = [
@@ -151,10 +146,8 @@
   let contextMenuRequest = null;
   let galleryNavigationPage = null;
   let queuedGalleryDirections = [];
-  // When the key bubbles stop showing for the current visit to the viewer.
-  let keyBadgeHideAt = null;
-  // Same for the bubbles outside of the viewer.
-  let pageKeyBadgeHideAt = null;
+  // Whether the keybind bubbles are turned on in the extension's Options.
+  let keyBadgesEnabled = true;
 
   function isDisplayed(element) {
     if (!element.isConnected) {
@@ -295,7 +288,9 @@
   }
 
   function findNavigationButton(viewer, direction) {
-    const buttons = Array.from(viewer.querySelectorAll('button, [role="button"], a'));
+    // The side panel's own buttons (such as its close chevron) are never slide navigation.
+    const buttons = Array.from(viewer.querySelectorAll('button, [role="button"], a'))
+      .filter((button) => !button.closest(".p-lightbox-sidebar"));
 
     for (const button of buttons) {
       if (!isRendered(button)) {
@@ -695,36 +690,7 @@
     return Boolean(lightbox) && isDisplayed(lightbox);
   }
 
-  function isShowKeyBadgesShortcut(event) {
-    return !event.defaultPrevented
-      && !event.repeat
-      && !event.isComposing
-      && !event.altKey
-      && !event.ctrlKey
-      && !event.metaKey
-      && !event.shiftKey
-      && typeof event.key === "string"
-      && event.key.toLowerCase() === "t"
-      && !isEditableTarget(event.target);
-  }
-
-  // Shows the key bubbles again, in the viewer when it is open and on the page otherwise.
-  function showKeyBadges() {
-    const hideAt = startKeyBadgeTimer(KEY_BADGE_SHORTCUT_VISIBLE_MS);
-    if (getViewer() || isLightboxOpen()) {
-      keyBadgeHideAt = hideAt;
-    } else {
-      pageKeyBadgeHideAt = hideAt;
-    }
-    scheduleSynchronization();
-  }
-
   function handleKeydown(event) {
-    // T keeps doing what it does in the viewer (people editing) and also shows the bubbles.
-    if (isShowKeyBadgesShortcut(event)) {
-      showKeyBadges();
-    }
-
     if (event.key === "Escape" && closeSearchMenu()) {
       event.preventDefault();
       event.stopPropagation();
@@ -791,6 +757,25 @@
       }
     }
 
+    if (
+      !event.defaultPrevented
+      && !event.repeat
+      && !event.isComposing
+      && !event.altKey
+      && !event.ctrlKey
+      && !event.metaKey
+      && !event.shiftKey
+      && typeof event.key === "string"
+      && event.key.toLowerCase() === "u"
+      && !isEditableTarget(event.target)
+      && getViewer()
+    ) {
+      event.preventDefault();
+      event.stopPropagation();
+      setAutoplayEnabled(!autoplayEnabled);
+      return;
+    }
+
     const markerAction = viewerMarkerShortcut(event);
     if (markerAction && !isEditableTarget(event.target)) {
       const viewer = getViewer();
@@ -815,7 +800,8 @@
         if (editToggle.classList.contains("is-active")) {
           clearHighlightedFace();
         }
-        editToggle.click();
+        // PhotoPrism ignores clicks while its controls are hidden and only reveals them.
+        clickRevealingControls(editToggle, isVisuallyHidden(editToggle, viewer) || areControlsHidden(viewer));
         return;
       }
 
@@ -1892,14 +1878,14 @@
   // Side panel items only get a bubble while the panel is open.
   function getKeyBadgeTargets(viewer) {
     const targets = new Map();
-    const add = (element, label, { atIcon = false, inSidebar = false, offsetX = 0, fixed = false } = {}) => {
+    const add = (element, label, { atIcon = false, inSidebar = false, offsetX = 0, fixed = false, centered = false } = {}) => {
       if (!element || (!inSidebar && element.closest(".p-lightbox-sidebar"))) {
         return;
       }
 
       const existing = targets.get(element);
       if (!existing) {
-        targets.set(element, { label, atIcon, offsetX, fixed });
+        targets.set(element, { label, atIcon, offsetX, fixed, centered });
       } else if (!existing.label.split("/").includes(label)) {
         // Two keys that trigger the same button share one bubble.
         existing.label += `/${label}`;
@@ -1913,7 +1899,7 @@
       add(
         buttons.find((button) => /chevron[-_ ]?right|arrow[-_ ]?right/.test(getIconTokens(button))) || buttons[0],
         "Tab",
-        { atIcon: true, inSidebar: true, fixed: true },
+        { atIcon: true, inSidebar: true, fixed: true, centered: true },
       );
     } else {
       add(viewer.querySelector(".pswp__button--info-button"), "Tab");
@@ -1925,6 +1911,7 @@
           .find((button) => /\bzoom\b/i.test(getElementLabel(button))),
       "Z",
     );
+    add(viewer.querySelector(`.${AUTOPLAY_BUTTON_CLASS}`), "U");
     add(viewer.querySelector(`.${RANDOM_BUTTON_CLASS}`), "R");
     if (getViewerVideos(viewer).length) {
       add(getMuteButton(viewer), "W/S");
@@ -2011,23 +1998,39 @@
 
   // Bubbles on small buttons are wider than the button and get cut off by it, so these are
   // positioned on the screen instead of inside the button.
-  function placeKeyBadgeFixed(button, badge, atIcon, offsetX) {
+  function placeKeyBadgeFixed(button, badge, atIcon, offsetX, centered = false) {
     const buttonRect = button.getBoundingClientRect();
     const icon = atIcon ? button.querySelector("svg, i, img") : null;
     const iconRect = icon?.getBoundingClientRect();
 
-    // A transformed ancestor becomes the origin of fixed positions, so find where 0, 0 is.
-    badge.dataset.fixed = "true";
-    badge.style.position = "fixed";
-    badge.style.right = "auto";
-    badge.style.left = "0px";
-    badge.style.top = "0px";
-    const origin = badge.getBoundingClientRect();
+    if (badge.dataset.fixed !== "true") {
+      badge.dataset.fixed = "true";
+      badge.style.position = "fixed";
+      badge.style.right = "auto";
+      badge.style.left = "0px";
+      badge.style.top = "0px";
+    }
 
-    const left = iconRect ? iconRect.right - 6 + offsetX : buttonRect.right - 2 - badge.offsetWidth;
-    const top = iconRect ? iconRect.top - 4 : buttonRect.top + 2;
-    badge.style.left = `${Math.round(left - origin.left)}px`;
-    badge.style.top = `${Math.round(top - origin.top)}px`;
+    // A transformed ancestor becomes the origin of fixed positions, so find where 0, 0 is
+    // from the badge's current position, without moving the badge there and back.
+    const badgeRect = badge.getBoundingClientRect();
+    const originLeft = badgeRect.left - (Number.parseFloat(badge.style.left) || 0);
+    const originTop = badgeRect.top - (Number.parseFloat(badge.style.top) || 0);
+
+    const left = iconRect
+      ? (centered
+        ? iconRect.left + (iconRect.width / 2) - (badge.offsetWidth / 2)
+        : iconRect.right - 6 + offsetX)
+      : buttonRect.right - 2 - badge.offsetWidth;
+    const top = iconRect ? iconRect.top - 4 - (centered ? 6 : 0) : buttonRect.top + 2;
+    const leftValue = `${Math.round(left - originLeft)}px`;
+    const topValue = `${Math.round(top - originTop)}px`;
+    if (badge.style.left !== leftValue) {
+      badge.style.left = leftValue;
+    }
+    if (badge.style.top !== topValue) {
+      badge.style.top = topValue;
+    }
   }
 
   function placeKeyBadgeAlignedToItem(element, badge, item, rightEdge) {
@@ -2069,63 +2072,29 @@
     }
   }
 
-  function startKeyBadgeTimer(visibleMs) {
-    window.setTimeout(scheduleSynchronization, visibleMs + 50);
-    return Date.now() + visibleMs;
-  }
-
-  // Fades a bubble out and removes it when the fade has finished, whatever else gets updated meanwhile.
-  function fadeOutKeyBadge(badge) {
-    if (badge.classList.contains(KEY_BADGE_FADING_CLASS)) {
+  // Shows a small bubble with the key on every viewer button that has a keybind.
+  function syncKeyBadges(viewer) {
+    if (!keyBadgesEnabled) {
+      document.querySelectorAll(`.${KEY_BADGE_CLASS}`).forEach((badge) => badge.remove());
       return;
     }
 
-    badge.classList.add(KEY_BADGE_FADING_CLASS);
-    const remove = () => badge.remove();
-    badge.addEventListener("transitionend", remove, { once: true });
-    window.setTimeout(remove, KEY_BADGE_FADE_MS + 200);
-  }
-
-  // Shows a small bubble with the key on every viewer button that has a keybind.
-  function syncKeyBadges(viewer) {
     // While a new slide (such as a video) is still loading, no viewer is found even though it is open.
     // That is not a new visit, so nothing is reset.
     if (!viewer && isLightboxOpen()) {
       return;
     }
 
-    let targets;
-    let hideAt;
-    if (viewer) {
-      pageKeyBadgeHideAt = null;
-      if (keyBadgeHideAt === null) {
-        keyBadgeHideAt = startKeyBadgeTimer(KEY_BADGE_VISIBLE_MS);
-      }
-      hideAt = keyBadgeHideAt;
-      targets = Date.now() < hideAt ? getKeyBadgeTargets(viewer) : new Map();
-    } else {
-      keyBadgeHideAt = null;
-      targets = getPageKeyBadgeTargets();
-      if (targets.size && pageKeyBadgeHideAt === null) {
-        pageKeyBadgeHideAt = startKeyBadgeTimer(KEY_BADGE_PAGE_VISIBLE_MS);
-      }
-      hideAt = pageKeyBadgeHideAt;
-    }
+    const targets = viewer ? getKeyBadgeTargets(viewer) : getPageKeyBadgeTargets();
 
-    // Once the visible time is over, the bubbles that are still there fade out and no new ones appear.
-    if (hideAt !== null && Date.now() >= hideAt) {
-      document.querySelectorAll(`.${KEY_BADGE_CLASS}`).forEach(fadeOutKeyBadge);
-      return;
-    }
-
-    for (const badge of document.querySelectorAll(`.${KEY_BADGE_CLASS}:not(.${KEY_BADGE_FADING_CLASS})`)) {
+    for (const badge of document.querySelectorAll(`.${KEY_BADGE_CLASS}`)) {
       if (targets.get(badge.parentElement)?.label !== badge.textContent) {
         badge.remove();
       }
     }
 
-    for (const [button, { label, atIcon, offsetX, alignTo, rightEdge, fixed }] of targets) {
-      let badge = button.querySelector(`:scope > .${KEY_BADGE_CLASS}:not(.${KEY_BADGE_FADING_CLASS})`);
+    for (const [button, { label, atIcon, offsetX, alignTo, rightEdge, fixed, centered }] of targets) {
+      let badge = button.querySelector(`:scope > .${KEY_BADGE_CLASS}`);
       if (!badge) {
         if (!fixed && window.getComputedStyle(button).position === "static") {
           button.style.position = "relative";
@@ -2139,7 +2108,7 @@
       }
 
       if (fixed) {
-        placeKeyBadgeFixed(button, badge, atIcon, offsetX);
+        placeKeyBadgeFixed(button, badge, atIcon, offsetX, centered);
       } else {
         if (atIcon) {
           placeKeyBadgeAtIcon(button, badge, offsetX);
@@ -2320,7 +2289,7 @@
   }
 
   async function start() {
-    const settings = await chrome.storage.local.get(["serverOrigin", "videoVolume", AUTOPLAY_ENABLED_KEY]);
+    const settings = await chrome.storage.local.get(["serverOrigin", "videoVolume", AUTOPLAY_ENABLED_KEY, KEY_BADGES_ENABLED_KEY]);
     if (settings.serverOrigin !== window.location.origin) {
       return;
     }
@@ -2330,6 +2299,9 @@
     }
     if (typeof settings[AUTOPLAY_ENABLED_KEY] === "boolean") {
       autoplayEnabled = settings[AUTOPLAY_ENABLED_KEY];
+    }
+    if (typeof settings[KEY_BADGES_ENABLED_KEY] === "boolean") {
+      keyBadgesEnabled = settings[KEY_BADGES_ENABLED_KEY];
     }
 
     // Registered first so that other handlers cannot stop these events before they are seen.
@@ -2341,6 +2313,10 @@
     chrome.storage.onChanged.addListener((changes, areaName) => {
       if (areaName === "local" && typeof changes[AUTOPLAY_ENABLED_KEY]?.newValue === "boolean") {
         setAutoplayEnabled(changes[AUTOPLAY_ENABLED_KEY].newValue, false);
+      }
+      if (areaName === "local" && typeof changes[KEY_BADGES_ENABLED_KEY]?.newValue === "boolean") {
+        keyBadgesEnabled = changes[KEY_BADGES_ENABLED_KEY].newValue;
+        scheduleSynchronization();
       }
       if (areaName !== "local" || !changes.videoVolume) {
         return;
