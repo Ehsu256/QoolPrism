@@ -55,16 +55,17 @@
   // Material Design Icons "magnify".
   const SEARCH_ICON = "M9.5,3A6.5,6.5 0 0,1 16,9.5C16,11.11 15.41,12.59 14.44,13.73L14.71,14H15.5L20.5,19L19,20.5L14,15.5V14.71L13.73,14.44C12.59,15.41 11.11,16 9.5,16A6.5,6.5 0 0,1 3,9.5A6.5,6.5 0 0,1 9.5,3M9.5,5C7,5 5,7 5,9.5C5,12 7,14 9.5,14C12,14 14,12 14,9.5C14,7 12,5 9.5,5Z";
   // The ids match the image search services in background.js.
+  // These items should be organized alphabetically.
   const IMAGE_SEARCH_OPTIONS = [
-    {
-      id: "yandex-image-search",
-      label: "Yandex",
-      icon: "https://yastatic.net/s3/home/services/all/all_lite/Images_v4.svg",
-    },
     {
       id: "iqdb-image-search",
       label: "IQDB",
       icon: "https://iqdb.org/favicon.ico",
+    },
+    {
+      id: "yandex-image-search",
+      label: "Yandex",
+      icon: "https://yastatic.net/s3/home/services/all/all_lite/Images_v4.svg",
     },
   ];
   const PLAY_BUTTON_SELECTOR = ".pswp__play";
@@ -84,6 +85,9 @@
   const KEY_BADGES_ENABLED_KEY = "keyBadgesEnabled";
   const CLIPBOARD_MENU_BUTTON_SELECTOR = 'button.action-menu[aria-controls="t-clipboard"]';
   const CONTEXT_MENU_ATTRIBUTE = "data-qoolprism-context-menu";
+  // Set on the page while the actions menu is opening after a right click, to keep it hidden
+  // until it has been moved next to the cursor.
+  const CONTEXT_MENU_PENDING_ATTRIBUTE = "data-qoolprism-context-pending";
   const CONTEXT_MENU_PROPERTIES = [
     "--qoolprism-context-left",
     "--qoolprism-context-top",
@@ -139,11 +143,13 @@
   let highlightedFaceElement = null;
   // Marker whose input box under the face was clicked, so its suggestions open next to it.
   let mirrorFocusUid = null;
-  // Number of selected images the last time the actions menu button was checked.
-  let lastClipboardCount = null;
   let lastClipboardMenuClick = 0;
   // Pending right click on a gallery image: where to show the actions menu.
   let contextMenuRequest = null;
+  // Right clicking while the actions menu is open makes PhotoPrism's menu (Vuetify) close itself,
+  // and it keeps closing for a moment: once right away and once more after 40 ms, and it
+  // ignores clicks on its button for 50 ms after closing. The menu is only opened again after this.
+  const CLIPBOARD_MENU_REOPEN_DELAY_MS = 150;
   let galleryNavigationPage = null;
   let queuedGalleryDirections = [];
   // Whether the keybind bubbles are turned on in the extension's Options.
@@ -392,12 +398,18 @@
       return [];
     }
 
+    // A collapsed sidebar only shows icons, so its items have no title. Its expand button
+    // (.nav-expand) is not a menu item.
+    const collapsed = sidebar.classList.contains("v-navigation-drawer--rail")
+      || Boolean(sidebar.querySelector(".nav-expand"));
+
     return Array.from(sidebar.querySelectorAll(".nav-menu .v-list-item"))
       .filter((item) => {
-        const title = item.querySelector(".v-list-item-title");
+        const hasLabel = collapsed
+          ? !item.matches(".nav-expand") && Boolean(item.querySelector(".v-icon"))
+          : Boolean(item.querySelector(".v-list-item-title")?.textContent.trim());
         if (
-          !title
-          || !title.textContent.trim()
+          !hasLabel
           || !isDisplayed(item)
           || item.matches(
             '[aria-disabled="true"], .v-list-item--disabled, .v-list-group__header, [aria-expanded]',
@@ -2120,31 +2132,42 @@
     }
   }
 
-  // Expands PhotoPrism's actions menu when more images get selected outside of the viewer.
+  // Opens PhotoPrism's actions menu for a right click on a gallery image.
   function syncClipboardMenu(viewer) {
     const button = document.querySelector(CLIPBOARD_MENU_BUTTON_SELECTOR);
-    const count = Number.parseInt(button?.querySelector(".count-clipboard")?.textContent, 10) || 0;
-    const previousCount = lastClipboardCount;
-    lastClipboardCount = count;
-
-    const selectionGrew = previousCount !== null && count > previousCount;
     const rightClicked = Boolean(contextMenuRequest) && !contextMenuRequest.opened;
     const now = Date.now();
+    const waitingForMenuToClose = Boolean(contextMenuRequest) && now < contextMenuRequest.waitUntil;
 
     if (
       button
       && !viewer
-      && (selectionGrew || rightClicked)
+      && !waitingForMenuToClose
+      && rightClicked
       && button.getAttribute("aria-expanded") === "false"
       && now - lastClipboardMenuClick > 400
     ) {
       lastClipboardMenuClick = now;
+      setContextMenuPending(true);
       button.click();
     }
   }
 
-  function clearContextMenuAnchor() {
+  function setContextMenuPending(pending) {
+    if (pending) {
+      document.documentElement.setAttribute(CONTEXT_MENU_PENDING_ATTRIBUTE, "");
+    } else {
+      document.documentElement.removeAttribute(CONTEXT_MENU_PENDING_ATTRIBUTE);
+    }
+  }
+
+  // With onlyHidden, a menu that is still fading out stays where it is, and is let go of
+  // once it is gone. Otherwise it would jump back to its original spot while closing.
+  function clearContextMenuAnchor(onlyHidden = false) {
     for (const element of document.querySelectorAll(`[${CONTEXT_MENU_ATTRIBUTE}]`)) {
+      if (onlyHidden && isRendered(element)) {
+        continue;
+      }
       element.removeAttribute(CONTEXT_MENU_ATTRIBUTE);
       for (const property of CONTEXT_MENU_PROPERTIES) {
         element.style.removeProperty(property);
@@ -2156,15 +2179,27 @@
   function syncContextMenuPosition(viewer) {
     const request = contextMenuRequest;
     if (!request) {
-      clearContextMenuAnchor();
+      setContextMenuPending(false);
+      clearContextMenuAnchor(true);
       return;
     }
 
     const button = document.querySelector(CLIPBOARD_MENU_BUTTON_SELECTOR);
     const expanded = button?.getAttribute("aria-expanded") === "true";
-    if (viewer || (!expanded && (request.opened || Date.now() - request.since > 1500))) {
+    const now = Date.now();
+    if (now - request.since > 3000) {
+      setContextMenuPending(false);
+    }
+
+    // The menu that was open during the right click is still closing itself.
+    if (!viewer && now < request.waitUntil) {
+      return;
+    }
+
+    if (viewer || (!expanded && (request.opened || now - request.since > 1500))) {
       contextMenuRequest = null;
-      clearContextMenuAnchor();
+      setContextMenuPending(false);
+      clearContextMenuAnchor(true);
       return;
     }
     if (!expanded) {
@@ -2207,6 +2242,7 @@
         content.style.setProperty(property, value);
       }
     }
+    setContextMenuPending(false);
   }
 
   function synchronizeFeatures() {
@@ -2427,7 +2463,21 @@
 
       event.preventDefault();
       event.stopPropagation();
-      contextMenuRequest = { x: event.clientX, y: event.clientY, since: Date.now(), opened: false };
+      const now = Date.now();
+      const menuWasOpen = document.querySelector(CLIPBOARD_MENU_BUTTON_SELECTOR)
+        ?.getAttribute("aria-expanded") === "true";
+      contextMenuRequest = {
+        x: event.clientX,
+        y: event.clientY,
+        since: now,
+        opened: false,
+        // An open menu closes itself because of this right click, and is opened again afterwards.
+        waitUntil: menuWasOpen ? now + CLIPBOARD_MENU_REOPEN_DELAY_MS : 0,
+      };
+      if (menuWasOpen) {
+        lastClipboardMenuClick = 0;
+        window.setTimeout(scheduleSynchronization, CLIPBOARD_MENU_REOPEN_DELAY_MS + 10);
+      }
       if (!card.classList.contains("is-selected")) {
         card.querySelector("button.input-select")?.click();
       }
@@ -2442,9 +2492,6 @@
     const observer = new MutationObserver((records) => {
       const pageChanged = records.some(({ type, target, addedNodes, removedNodes }) => {
         const element = target instanceof Element ? target : target.parentElement;
-        if (type === "characterData") {
-          return Boolean(element?.closest(".count-clipboard"));
-        }
         if (
           type === "childList"
           && [...addedNodes, ...removedNodes].every(
@@ -2465,7 +2512,6 @@
     observer.observe(document.documentElement, {
       childList: true,
       subtree: true,
-      characterData: true,
       attributes: true,
       attributeFilter: ["class", "style", "aria-hidden", "aria-modal"],
     });
