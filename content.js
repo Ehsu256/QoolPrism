@@ -81,8 +81,8 @@
   const MARKER_UNASSIGN_CLASS = "qoolprism-marker-unassign";
   const MARKER_INPUTS_ACTIVE_CLASS = "qoolprism-has-marker-inputs";
   const SUBJECT_AVATAR_CLASS = "qoolprism-subject-avatar";
-  const KEY_BADGE_CLASS = "qoolprism-key-badge";
-  const KEY_BADGES_ENABLED_KEY = "keyBadgesEnabled";
+  const KEY_BUBBLE_CLASS = "qoolprism-key-bubble";
+  const KEY_BUBBLES_ENABLED_KEY = "keyBubblesEnabled";
   const CLIPBOARD_MENU_BUTTON_SELECTOR = 'button.action-menu[aria-controls="t-clipboard"]';
   const CONTEXT_MENU_ATTRIBUTE = "data-qoolprism-context-menu";
   // Set on the page while the actions menu is opening after a right click, to keep it hidden
@@ -153,7 +153,7 @@
   let galleryNavigationPage = null;
   let queuedGalleryDirections = [];
   // Whether the keybind bubbles are turned on in the extension's Options.
-  let keyBadgesEnabled = true;
+  let keyBubblesEnabled = true;
 
   function isDisplayed(element) {
     if (!element.isConnected) {
@@ -1888,7 +1888,7 @@
 
   // Finds the viewer buttons and side panel items that have a keybind, with the key to show.
   // Side panel items only get a bubble while the panel is open.
-  function getKeyBadgeTargets(viewer) {
+  function getKeyBubbleTargets(viewer) {
     const targets = new Map();
     const add = (element, label, { atIcon = false, inSidebar = false, offsetX = 0, fixed = false, centered = false } = {}) => {
       if (!element || (!inSidebar && element.closest(".p-lightbox-sidebar"))) {
@@ -1983,7 +1983,7 @@
   }
 
   // Finds the navigation sidebar items that have a keybind outside of the viewer: Tab and 1-9, 0, -, =.
-  function getPageKeyBadgeTargets() {
+  function getPageKeyBubbleTargets() {
     const targets = new Map();
     const toggle = findNavigationSidebarToggle();
     if (toggle) {
@@ -2010,56 +2010,56 @@
 
   // Bubbles on small buttons are wider than the button and get cut off by it, so these are
   // positioned on the screen instead of inside the button.
-  function placeKeyBadgeFixed(button, badge, atIcon, offsetX, centered = false) {
+  function placeKeyBubbleFixed(button, bubble, atIcon, offsetX, centered = false) {
     const buttonRect = button.getBoundingClientRect();
     const icon = atIcon ? button.querySelector("svg, i, img") : null;
     const iconRect = icon?.getBoundingClientRect();
 
-    if (badge.dataset.fixed !== "true") {
-      badge.dataset.fixed = "true";
-      badge.style.position = "fixed";
-      badge.style.right = "auto";
-      badge.style.left = "0px";
-      badge.style.top = "0px";
+    if (bubble.dataset.fixed !== "true") {
+      bubble.dataset.fixed = "true";
+      bubble.style.position = "fixed";
+      bubble.style.right = "auto";
+      bubble.style.left = "0px";
+      bubble.style.top = "0px";
     }
 
     // A transformed ancestor becomes the origin of fixed positions, so find where 0, 0 is
-    // from the badge's current position, without moving the badge there and back.
-    const badgeRect = badge.getBoundingClientRect();
-    const originLeft = badgeRect.left - (Number.parseFloat(badge.style.left) || 0);
-    const originTop = badgeRect.top - (Number.parseFloat(badge.style.top) || 0);
+    // from the bubble's current position, without moving the bubble there and back.
+    const bubbleRect = bubble.getBoundingClientRect();
+    const originLeft = bubbleRect.left - (Number.parseFloat(bubble.style.left) || 0);
+    const originTop = bubbleRect.top - (Number.parseFloat(bubble.style.top) || 0);
 
     const left = iconRect
       ? (centered
-        ? iconRect.left + (iconRect.width / 2) - (badge.offsetWidth / 2)
+        ? iconRect.left + (iconRect.width / 2) - (bubble.offsetWidth / 2)
         : iconRect.right - 6 + offsetX)
-      : buttonRect.right - 2 - badge.offsetWidth;
+      : buttonRect.right - 2 - bubble.offsetWidth;
     const top = iconRect ? iconRect.top - 4 - (centered ? 6 : 0) : buttonRect.top + 2;
     const leftValue = `${Math.round(left - originLeft)}px`;
     const topValue = `${Math.round(top - originTop)}px`;
-    if (badge.style.left !== leftValue) {
-      badge.style.left = leftValue;
+    if (bubble.style.left !== leftValue) {
+      bubble.style.left = leftValue;
     }
-    if (badge.style.top !== topValue) {
-      badge.style.top = topValue;
+    if (bubble.style.top !== topValue) {
+      bubble.style.top = topValue;
     }
   }
 
-  function placeKeyBadgeAlignedToItem(element, badge, item, rightEdge) {
+  function placeKeyBubbleAlignedToItem(element, bubble, item, rightEdge) {
     const rect = element.getBoundingClientRect();
     const right = `${Math.round(rect.right - rightEdge) + 2}px`;
     const top = `${Math.round(item.getBoundingClientRect().top - rect.top) + 2}px`;
 
-    if (badge.style.right !== right) {
-      badge.style.right = right;
+    if (bubble.style.right !== right) {
+      bubble.style.right = right;
     }
-    if (badge.style.top !== top) {
-      badge.style.top = top;
+    if (bubble.style.top !== top) {
+      bubble.style.top = top;
     }
   }
 
   // Puts the bubble on the top right corner of the button's icon instead of the button's own corner.
-  function placeKeyBadgeAtIcon(button, badge, offsetX = 0) {
+  function placeKeyBubbleAtIcon(button, bubble, offsetX = 0) {
     const icon = button.querySelector("svg, i, img");
     if (!icon) {
       return;
@@ -2069,25 +2069,25 @@
     const iconRect = icon.getBoundingClientRect();
     const left = `${Math.round(Math.max(0, Math.min(
       iconRect.right - buttonRect.left - 6 + offsetX,
-      button.clientWidth - badge.offsetWidth,
+      button.clientWidth - bubble.offsetWidth,
     )))}px`;
     const top = `${Math.round(Math.max(0, iconRect.top - buttonRect.top - 4))}px`;
 
-    if (badge.style.left !== left) {
-      badge.style.left = left;
+    if (bubble.style.left !== left) {
+      bubble.style.left = left;
     }
-    if (badge.style.top !== top) {
-      badge.style.top = top;
+    if (bubble.style.top !== top) {
+      bubble.style.top = top;
     }
-    if (badge.style.right !== "auto") {
-      badge.style.right = "auto";
+    if (bubble.style.right !== "auto") {
+      bubble.style.right = "auto";
     }
   }
 
   // Shows a small bubble with the key on every viewer button that has a keybind.
-  function syncKeyBadges(viewer) {
-    if (!keyBadgesEnabled) {
-      document.querySelectorAll(`.${KEY_BADGE_CLASS}`).forEach((badge) => badge.remove());
+  function syncKeyBubbles(viewer) {
+    if (!keyBubblesEnabled) {
+      document.querySelectorAll(`.${KEY_BUBBLE_CLASS}`).forEach((bubble) => bubble.remove());
       return;
     }
 
@@ -2097,36 +2097,36 @@
       return;
     }
 
-    const targets = viewer ? getKeyBadgeTargets(viewer) : getPageKeyBadgeTargets();
+    const targets = viewer ? getKeyBubbleTargets(viewer) : getPageKeyBubbleTargets();
 
-    for (const badge of document.querySelectorAll(`.${KEY_BADGE_CLASS}`)) {
-      if (targets.get(badge.parentElement)?.label !== badge.textContent) {
-        badge.remove();
+    for (const bubble of document.querySelectorAll(`.${KEY_BUBBLE_CLASS}`)) {
+      if (targets.get(bubble.parentElement)?.label !== bubble.textContent) {
+        bubble.remove();
       }
     }
 
     for (const [button, { label, atIcon, offsetX, alignTo, rightEdge, fixed, centered }] of targets) {
-      let badge = button.querySelector(`:scope > .${KEY_BADGE_CLASS}`);
-      if (!badge) {
+      let bubble = button.querySelector(`:scope > .${KEY_BUBBLE_CLASS}`);
+      if (!bubble) {
         if (!fixed && window.getComputedStyle(button).position === "static") {
           button.style.position = "relative";
         }
 
-        badge = document.createElement("span");
-        badge.className = KEY_BADGE_CLASS;
-        badge.setAttribute("aria-hidden", "true");
-        badge.textContent = label;
-        button.append(badge);
+        bubble = document.createElement("span");
+        bubble.className = KEY_BUBBLE_CLASS;
+        bubble.setAttribute("aria-hidden", "true");
+        bubble.textContent = label;
+        button.append(bubble);
       }
 
       if (fixed) {
-        placeKeyBadgeFixed(button, badge, atIcon, offsetX, centered);
+        placeKeyBubbleFixed(button, bubble, atIcon, offsetX, centered);
       } else {
         if (atIcon) {
-          placeKeyBadgeAtIcon(button, badge, offsetX);
+          placeKeyBubbleAtIcon(button, bubble, offsetX);
         }
         if (alignTo) {
-          placeKeyBadgeAlignedToItem(button, badge, alignTo, rightEdge);
+          placeKeyBubbleAlignedToItem(button, bubble, alignTo, rightEdge);
         }
       }
     }
@@ -2251,7 +2251,7 @@
     const viewer = getViewer();
     syncClipboardMenu(viewer);
     syncContextMenuPosition(viewer);
-    syncKeyBadges(viewer);
+    syncKeyBubbles(viewer);
     if (!viewer) {
       closeSearchMenu();
       clearHighlightedFace();
@@ -2325,7 +2325,7 @@
   }
 
   async function start() {
-    const settings = await chrome.storage.local.get(["serverOrigin", "videoVolume", AUTOPLAY_ENABLED_KEY, KEY_BADGES_ENABLED_KEY]);
+    const settings = await chrome.storage.local.get(["serverOrigin", "videoVolume", AUTOPLAY_ENABLED_KEY, KEY_BUBBLES_ENABLED_KEY]);
     if (settings.serverOrigin !== window.location.origin) {
       return;
     }
@@ -2336,8 +2336,8 @@
     if (typeof settings[AUTOPLAY_ENABLED_KEY] === "boolean") {
       autoplayEnabled = settings[AUTOPLAY_ENABLED_KEY];
     }
-    if (typeof settings[KEY_BADGES_ENABLED_KEY] === "boolean") {
-      keyBadgesEnabled = settings[KEY_BADGES_ENABLED_KEY];
+    if (typeof settings[KEY_BUBBLES_ENABLED_KEY] === "boolean") {
+      keyBubblesEnabled = settings[KEY_BUBBLES_ENABLED_KEY];
     }
 
     // Registered first so that other handlers cannot stop these events before they are seen.
@@ -2350,8 +2350,8 @@
       if (areaName === "local" && typeof changes[AUTOPLAY_ENABLED_KEY]?.newValue === "boolean") {
         setAutoplayEnabled(changes[AUTOPLAY_ENABLED_KEY].newValue, false);
       }
-      if (areaName === "local" && typeof changes[KEY_BADGES_ENABLED_KEY]?.newValue === "boolean") {
-        keyBadgesEnabled = changes[KEY_BADGES_ENABLED_KEY].newValue;
+      if (areaName === "local" && typeof changes[KEY_BUBBLES_ENABLED_KEY]?.newValue === "boolean") {
+        keyBubblesEnabled = changes[KEY_BUBBLES_ENABLED_KEY].newValue;
         scheduleSynchronization();
       }
       if (areaName !== "local" || !changes.videoVolume) {
@@ -2380,7 +2380,7 @@
     window.addEventListener("scroll", updatePopoverPosition, true);
     // Bubbles positioned on the screen have to follow their button when the page or side panel scrolls.
     window.addEventListener("scroll", () => {
-      if (document.querySelector(`.${KEY_BADGE_CLASS}[data-fixed]`)) {
+      if (document.querySelector(`.${KEY_BUBBLE_CLASS}[data-fixed]`)) {
         scheduleSynchronization();
       }
     }, true);
@@ -2495,13 +2495,13 @@
         if (
           type === "childList"
           && [...addedNodes, ...removedNodes].every(
-            (node) => node instanceof Element && node.classList.contains(KEY_BADGE_CLASS),
+            (node) => node instanceof Element && node.classList.contains(KEY_BUBBLE_CLASS),
           )
         ) {
           return false;
         }
         return !element?.closest(
-          `.${CONTROL_CLASS}, .${MARKER_INPUTS_CLASS}, .${AUTOPLAY_BUTTON_CLASS}, .${KEY_BADGE_CLASS}`,
+          `.${CONTROL_CLASS}, .${MARKER_INPUTS_CLASS}, .${AUTOPLAY_BUTTON_CLASS}, .${KEY_BUBBLE_CLASS}`,
         );
       });
 
