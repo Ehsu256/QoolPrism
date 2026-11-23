@@ -359,10 +359,10 @@
     }
 
     const normalizedKey = key.toLowerCase();
-    if (normalizedKey === "w") {
+    if (normalizedKey === "w" || normalizedKey === "arrowup") {
       return 0.05;
     }
-    if (normalizedKey === "s") {
+    if (normalizedKey === "s" || normalizedKey === "arrowdown") {
       return -0.05;
     }
     return 0;

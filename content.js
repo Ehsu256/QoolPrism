@@ -969,6 +969,33 @@
     clickRevealingControls(button, isVisuallyHidden(button, viewer) || areControlsHidden(viewer));
   }
 
+  // Scrolling the mouse wheel over the visible volume bar (or the mute button that opens it)
+  // changes the volume by the same step as the W/S keys.
+  function handleVolumeWheel(event) {
+    if (
+      !volumePopover
+      || volumePopover.getAttribute("data-open") !== "true"
+      || !currentVideo
+      || !currentVideos.length
+      || !event.deltaY
+      || !(event.target instanceof Node)
+      || !(volumePopover.contains(event.target) || muteButton?.contains(event.target))
+    ) {
+      return;
+    }
+
+    preferredVolume = adjustVolume(currentVideo.volume, event.deltaY < 0 ? 0.05 : -0.05);
+    setMediaVolume(currentVideos, preferredVolume);
+    persistPreferredVolume();
+    if (event.deltaY < 0 && preferredVolume > 0) {
+      setMediaMuted(currentVideos, false);
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    updateControlValues();
+  }
+
   function updatePopoverPosition() {
     if (!muteButton || !volumePopover || !muteButton.isConnected) {
       return;
@@ -987,7 +1014,7 @@
       : Math.min(rect.bottom + 8, window.innerHeight - popoverHeight - 8);
 
     volumePopover.style.left = `${left}px`;
-    volumePopover.style.top = `${Math.max(8, top)}px`;
+    volumePopover.style.top = `${Math.max(8, top - 20)}px`;
   }
 
   function updateControlValues() {
@@ -2345,6 +2372,7 @@
       window.addEventListener(type, markPlayIntent, true);
     }
     window.addEventListener("keydown", handleKeydown, true);
+    window.addEventListener("wheel", handleVolumeWheel, { capture: true, passive: false });
     window.addEventListener("play", suppressNativeAutoplay, true);
     chrome.storage.onChanged.addListener((changes, areaName) => {
       if (areaName === "local" && typeof changes[AUTOPLAY_ENABLED_KEY]?.newValue === "boolean") {
