@@ -10,6 +10,8 @@ const IQDB_IMAGES_URL = "https://iqdb.org/";
 const IQDB_IMAGE_MENU_ID = "iqdb-image-search";
 const IQDB_MAX_UPLOAD_BYTES = 8 * 1024 * 1024;
 const IQDB_MAX_DIMENSION = 7500;
+const GOOGLE_LENS_URL = "https://www.google.com/";
+const GOOGLE_LENS_MENU_ID = "google-lens-image-search";
 
 function getServerConfig(value) {
   return PhotoPrismExtensionUtils.parseServerUrl(value);
@@ -959,7 +961,58 @@ async function uploadImageToIqdb(tabId, imageData) {
   });
 }
 
+async function uploadImageToGoogleLens(tabId, imageData) {
+  await waitForTabToLoad(tabId);
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    args: [imageData.dataUrl, imageData.fileName],
+    func: (dataUrl, fileName) => {
+      const [metadata, encoded] = dataUrl.split(",", 2);
+      const mimeType = /^data:([^;]+)/.exec(metadata)?.[1];
+      if (!mimeType || !mimeType.startsWith("image/") || !encoded) {
+        throw new Error("The selected image data is invalid.");
+      }
+
+      const binary = atob(encoded);
+      const bytes = new Uint8Array(binary.length);
+      for (let index = 0; index < binary.length; index += 1) {
+        bytes[index] = binary.charCodeAt(index);
+      }
+
+      // Posts the image to Google Lens's upload endpoint, which opens the results right away.
+      const form = document.createElement("form");
+      form.method = "POST";
+      form.action = "https://lens.google.com/v3/upload";
+      form.enctype = "multipart/form-data";
+      form.hidden = true;
+
+      const fileInput = document.createElement("input");
+      fileInput.type = "file";
+      fileInput.name = "encoded_image";
+      const transfer = new DataTransfer();
+      transfer.items.add(new File([bytes], fileName, { type: mimeType }));
+      fileInput.files = transfer.files;
+      if (fileInput.files.length !== 1) {
+        throw new Error("Google did not accept the selected image.");
+      }
+
+      form.append(fileInput);
+      document.body.append(form);
+
+      // Deferred so this script can return before the page navigates to the results.
+      window.setTimeout(() => form.submit(), 0);
+    },
+  });
+}
+
 const IMAGE_SEARCH_SERVICES = {
+  [GOOGLE_LENS_MENU_ID]: {
+    title: "Google Lens image search",
+    name: "Google Lens",
+    url: GOOGLE_LENS_URL,
+    prepare: async (imageData) => imageData,
+    upload: uploadImageToGoogleLens,
+  },
   [YANDEX_IMAGE_MENU_ID]: {
     title: "Yandex image search",
     name: "Yandex",

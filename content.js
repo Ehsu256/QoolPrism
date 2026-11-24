@@ -58,6 +58,11 @@
   // These items should be organized alphabetically.
   const IMAGE_SEARCH_OPTIONS = [
     {
+      id: "google-lens-image-search",
+      label: "Google Lens",
+      icon: "https://www.gstatic.com/images/branding/product/2x/lens_48dp.png",
+    },
+    {
       id: "iqdb-image-search",
       label: "IQDB",
       icon: "https://iqdb.org/favicon.ico",
