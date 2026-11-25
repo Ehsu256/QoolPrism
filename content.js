@@ -46,6 +46,8 @@
   const RANDOM_BUTTON_CLASS = "qoolprism-random-button";
   const SEARCH_BUTTON_CLASS = "qoolprism-search-button";
   const SEARCH_MENU_CLASS = "qoolprism-search-menu";
+  const REPLACE_BUTTON_CLASS = "qoolprism-replace-button";
+  const REPLACE_DIALOG_CLASS = "qoolprism-replace-dialog";
   const AUTOPLAY_ENABLED_KEY = "autoplayEnabled";
   const CLOSE_BUTTON_SELECTOR = ".pswp__top-bar .pswp__button--close-button";
   const AUTOPLAY_ICON_ON = "M10,16.5V7.5L16,12M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2Z";
@@ -56,6 +58,12 @@
   const SEARCH_ICON = "M9.5,3A6.5,6.5 0 0,1 16,9.5C16,11.11 15.41,12.59 14.44,13.73L14.71,14H15.5L20.5,19L19,20.5L14,15.5V14.71L13.73,14.44C12.59,15.41 11.11,16 9.5,16A6.5,6.5 0 0,1 3,9.5A6.5,6.5 0 0,1 9.5,3M9.5,5C7,5 5,7 5,9.5C5,12 7,14 9.5,14C12,14 14,12 14,9.5C14,7 12,5 9.5,5Z";
   // The ids match the image search services in background.js.
   // These items should be organized alphabetically.
+  // Material Design Icons "swap-horizontal".
+  const REPLACE_ICON = "M21,9L17,5V8H10V10H17V13M7,11L3,15L7,19V16H14V14H7V11Z";
+  const REPLACE_OPTIONS = [
+    { id: "replace-file", label: "Replace with file" },
+    { id: "replace-url", label: "Replace with image URL" },
+  ];
   const IMAGE_SEARCH_OPTIONS = [
     {
       id: "google-lens-image-search",
@@ -708,6 +716,12 @@
   }
 
   function handleKeydown(event) {
+    if (event.key === "Escape" && closeReplaceDialog()) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+
     if (event.key === "Escape" && closeSearchMenu()) {
       event.preventDefault();
       event.stopPropagation();
@@ -1296,36 +1310,56 @@
     searchMenuHideTimer = window.setTimeout(closeSearchMenu, 140);
   }
 
-  function openSearchMenu(button) {
-    if (document.querySelector(`.${SEARCH_MENU_CLASS}`)) {
+  // Everything that the viewer's two dropdowns (image search and replace image) differ in.
+  const SEARCH_MENU = {
+    name: "search",
+    options: IMAGE_SEARCH_OPTIONS,
+    run: (id) => searchCurrentMedia(id),
+    failureTitle: (label) => `${label} image search`,
+  };
+  const REPLACE_MENU = {
+    name: "replace",
+    options: REPLACE_OPTIONS,
+    run: (id) => replaceCurrentMedia(id),
+    failureTitle: () => "Replace image",
+  };
+
+  function openSearchMenu(button, config = SEARCH_MENU) {
+    const existing = document.querySelector(`.${SEARCH_MENU_CLASS}`);
+    if (existing?.dataset.menu === config.name) {
       return;
     }
+    existing?.remove();
 
     const menu = document.createElement("div");
     menu.className = SEARCH_MENU_CLASS;
+    menu.dataset.menu = config.name;
     menu.setAttribute("role", "menu");
     menu.addEventListener("pointerenter", cancelSearchMenuHide);
     menu.addEventListener("pointerleave", scheduleSearchMenuHide);
 
-    for (const { id, label, icon } of IMAGE_SEARCH_OPTIONS) {
+    for (const { id, label, icon } of config.options) {
       const item = document.createElement("button");
       item.type = "button";
       item.className = `${SEARCH_MENU_CLASS}__item`;
       item.setAttribute("role", "menuitem");
-      const logo = document.createElement("img");
-      logo.className = `${SEARCH_MENU_CLASS}__icon`;
-      logo.src = icon;
-      logo.alt = "";
-      logo.draggable = false;
-      item.append(logo, document.createTextNode(label));
+      if (icon) {
+        const logo = document.createElement("img");
+        logo.className = `${SEARCH_MENU_CLASS}__icon`;
+        logo.src = icon;
+        logo.alt = "";
+        logo.draggable = false;
+        item.append(logo);
+      }
+      item.append(document.createTextNode(label));
       item.addEventListener("click", (event) => {
         event.preventDefault();
         event.stopPropagation();
         closeSearchMenu();
-        searchCurrentMedia(id).catch((error) => {
+        config.run(id).catch((error) => {
           const message = error instanceof Error ? error.message : "An unexpected error occurred.";
-          console.error("Could not search this image.", error);
-          window.alert(`${label} image search failed: ${message}`);
+          console.error(`Could not run ${config.failureTitle(label)}.`, error);
+          window.alert(`${config.failureTitle(label)} failed: ${message}`);
         });
       });
       menu.append(item);
@@ -1339,6 +1373,147 @@
     ));
     menu.style.left = `${Math.round(left)}px`;
     menu.style.top = `${Math.round(rect.bottom + 4)}px`;
+  }
+
+  // Sends the replacement to the extension, which does the upload and the copying of the
+  // target's albums, labels and people, and archives the target.
+  async function sendReplaceRequest(payload) {
+    const response = await chrome.runtime.sendMessage({ type: "replace-image", ...payload });
+    if (!response?.ok) {
+      throw new Error(response?.error || "The image could not be replaced.");
+    }
+    if (response.warnings?.length) {
+      window.alert(`The image was replaced, but:\n${response.warnings.join("\n")}`);
+    }
+  }
+
+  function chooseReplacementFile() {
+    return new Promise((resolve) => {
+      const input = document.createElement("input");
+      input.type = "file";
+      input.accept = "image/*,video/*";
+      input.style.display = "none";
+      const finish = (file) => {
+        input.remove();
+        resolve(file);
+      };
+      input.addEventListener("change", () => finish(input.files[0] || null), { once: true });
+      input.addEventListener("cancel", () => finish(null), { once: true });
+      document.body.append(input);
+      input.click();
+    });
+  }
+
+  function closeReplaceDialog() {
+    const dialog = document.querySelector(`.${REPLACE_DIALOG_CLASS}`);
+    dialog?.remove();
+    return Boolean(dialog);
+  }
+
+  // The dialog's button is a fresh click, which the extension needs as the user gesture for
+  // asking access to the site that the image comes from.
+  function openReplaceUrlDialog() {
+    closeReplaceDialog();
+
+    const dialog = document.createElement("form");
+    dialog.className = REPLACE_DIALOG_CLASS;
+    const label = document.createElement("label");
+    label.textContent = "Image URL";
+    const input = document.createElement("input");
+    input.type = "url";
+    input.required = true;
+    input.autocomplete = "off";
+    input.placeholder = "https://example.com/image.jpg";
+    const actions = document.createElement("div");
+    actions.className = `${REPLACE_DIALOG_CLASS}__actions`;
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.textContent = "Cancel";
+    cancel.addEventListener("click", closeReplaceDialog);
+    const submit = document.createElement("button");
+    submit.type = "submit";
+    submit.textContent = "Replace";
+    actions.append(cancel, submit);
+    dialog.append(label, input, actions);
+
+    dialog.addEventListener("submit", (event) => {
+      event.preventDefault();
+      closeReplaceDialog();
+      sendReplaceRequest({ sourceType: "url", imageUrl: input.value.trim() }).catch((error) => {
+        const message = error instanceof Error ? error.message : "An unexpected error occurred.";
+        console.error("Could not replace this image.", error);
+        window.alert(`Replace image failed: ${message}`);
+      });
+    });
+
+    document.body.append(dialog);
+    input.focus();
+  }
+
+  // Everything before the first await runs synchronously, so that the click still counts as a
+  // user gesture when the file picker opens.
+  async function replaceCurrentMedia(id) {
+    if (!getViewer()) {
+      throw new Error("No image or video is shown in the viewer.");
+    }
+
+    if (id === "replace-url") {
+      openReplaceUrlDialog();
+      return;
+    }
+
+    const file = await chooseReplacementFile();
+    if (!file) {
+      return;
+    }
+
+    const blobUrl = URL.createObjectURL(file);
+    try {
+      await sendReplaceRequest({ sourceType: "file", blobUrl, fileName: file.name });
+    } finally {
+      URL.revokeObjectURL(blobUrl);
+    }
+  }
+
+  // Same look as the autoplay button. Opens a dropdown with the replace options.
+  function createReplaceButton() {
+    const svgNamespace = "http://www.w3.org/2000/svg";
+    const iconId = "qoolprism-icn-replace";
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `pswp__button pswp__button--mdi ${REPLACE_BUTTON_CLASS}`;
+    button.title = "Replace image";
+    button.setAttribute("aria-label", "Replace image");
+    button.setAttribute("aria-haspopup", "menu");
+
+    const icon = document.createElementNS(svgNamespace, "svg");
+    icon.setAttribute("class", "pswp__icn");
+    icon.setAttribute("viewBox", "0 0 24 24");
+    icon.setAttribute("width", "24");
+    icon.setAttribute("height", "24");
+    icon.setAttribute("aria-hidden", "true");
+    const shadow = document.createElementNS(svgNamespace, "use");
+    shadow.setAttribute("class", "pswp__icn-shadow");
+    shadow.setAttribute("href", `#${iconId}`);
+    const path = document.createElementNS(svgNamespace, "path");
+    path.setAttribute("id", iconId);
+    path.setAttribute("d", REPLACE_ICON);
+    icon.append(shadow, path);
+    button.append(icon);
+
+    button.addEventListener("pointerenter", () => {
+      cancelSearchMenuHide();
+      openSearchMenu(button, REPLACE_MENU);
+    });
+    button.addEventListener("pointerleave", scheduleSearchMenuHide);
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      cancelSearchMenuHide();
+      openSearchMenu(button, REPLACE_MENU);
+      button.blur();
+    });
+    return button;
   }
 
   // Same look as the autoplay button. Opens a dropdown with the image search services.
@@ -1385,7 +1560,8 @@
 
   // Adds the autoplay toggle right next to the viewer's close button,
   // the random image button right next to the autoplay toggle,
-  // and the image search button right before (to the left of) the autoplay toggle.
+  // the image search button right before (to the left of) the autoplay toggle,
+  // and the replace image button right after (to the right of) the image search button.
   function syncAutoplayButton(viewer) {
     const closeButton = viewer.querySelector(CLOSE_BUTTON_SELECTOR);
     if (!closeButton) {
@@ -1405,6 +1581,10 @@
 
     if (!closeButton.parentElement.querySelector(`.${SEARCH_BUTTON_CLASS}`)) {
       button.before(createSearchButton());
+    }
+
+    if (!closeButton.parentElement.querySelector(`.${REPLACE_BUTTON_CLASS}`)) {
+      closeButton.parentElement.querySelector(`.${SEARCH_BUTTON_CLASS}`)?.after(createReplaceButton());
     }
   }
 
@@ -2286,6 +2466,7 @@
     syncKeyBubbles(viewer);
     if (!viewer) {
       closeSearchMenu();
+      closeReplaceDialog();
       clearHighlightedFace();
       syncMarkerInputs(null);
       clearSuggestionMenuAnchor();
@@ -2404,7 +2585,7 @@
     document.addEventListener("pointerdown", (event) => {
       if (
         event.target instanceof Element
-        && !event.target.closest(`.${SEARCH_MENU_CLASS}, .${SEARCH_BUTTON_CLASS}`)
+        && !event.target.closest(`.${SEARCH_MENU_CLASS}, .${SEARCH_BUTTON_CLASS}, .${REPLACE_BUTTON_CLASS}`)
       ) {
         closeSearchMenu();
       }

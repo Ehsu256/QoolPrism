@@ -239,3 +239,62 @@
   background: rgba(255, 255, 255, 0.24);
   outline: none;
 }
+
+.qoolprism-replace-dialog {
+  position: fixed;
+  z-index: 2147483647;
+  top: 64px;
+  left: 50%;
+  display: grid;
+  gap: 8px;
+  box-sizing: border-box;
+  width: min(420px, calc(100vw - 16px));
+  padding: 12px;
+  border: thin solid #ffffff12;
+  border-radius: 6px;
+  color: #fff;
+  background: #191a1c;
+  box-shadow:
+    0 5px 5px -3px rgba(0, 0, 0, 0.2),
+    0 8px 10px 1px rgba(0, 0, 0, 0.14),
+    0 3px 14px 2px rgba(0, 0, 0, 0.12);
+  font-family: inherit;
+  font-size: 1rem;
+  transform: translateX(-50%);
+}
+
+.qoolprism-replace-dialog input {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 8px;
+  border: 1px solid #ffffff24;
+  border-radius: 4px;
+  color: #fff;
+  background: #0b0b0b;
+  font: inherit;
+}
+
+.qoolprism-replace-dialog input:focus-visible {
+  outline: 2px solid #b389ff;
+  outline-offset: 0;
+}
+
+.qoolprism-replace-dialog__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.qoolprism-replace-dialog__actions button {
+  padding: 6px 14px;
+  border: 0;
+  border-radius: 4px;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.12);
+  font: inherit;
+  cursor: pointer;
+}
+
+.qoolprism-replace-dialog__actions button[type="submit"] {
+  background: #5a408a;
+}

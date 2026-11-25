@@ -10,6 +10,7 @@ const IQDB_IMAGES_URL = "https://iqdb.org/";
 const IQDB_IMAGE_MENU_ID = "iqdb-image-search";
 const IQDB_MAX_UPLOAD_BYTES = 8 * 1024 * 1024;
 const IQDB_MAX_DIMENSION = 7500;
+const MAX_REPLACE_URL_BYTES = 20 * 1024 * 1024;
 const GOOGLE_LENS_URL = "https://www.google.com/";
 const GOOGLE_LENS_MENU_ID = "google-lens-image-search";
 
@@ -741,6 +742,263 @@ function openGalleryCoverInPage(coverUid) {
   throw new Error("PhotoPrism cannot open the selected cover from this page.");
 }
 
+// Runs in the PhotoPrism page. Returns the UID of the media that the viewer is showing.
+function getViewerMediaUidInPage() {
+  try {
+    const root = document.querySelector("#app")?._vnode;
+    if (!root) {
+      throw new Error("Could not find PhotoPrism's viewer.");
+    }
+
+    const visited = new Set();
+    let lightbox = null;
+    function findLightbox(vnode, depth) {
+      if (!vnode || typeof vnode !== "object" || depth > 100 || visited.has(vnode) || lightbox) {
+        return;
+      }
+      visited.add(vnode);
+
+      const instance = vnode.component;
+      if (instance) {
+        if (instance.type?.name === "PLightbox" || instance.type?.__name === "PLightbox") {
+          lightbox = instance;
+          return;
+        }
+        findLightbox(instance.subTree, depth + 1);
+      }
+      if (vnode.suspense) {
+        findLightbox(vnode.suspense.activeBranch, depth + 1);
+        findLightbox(vnode.suspense.pendingBranch, depth + 1);
+      }
+      if (Array.isArray(vnode.children)) {
+        vnode.children.forEach((child) => findLightbox(child, depth + 1));
+      }
+      if (Array.isArray(vnode.dynamicChildren)) {
+        vnode.dynamicChildren.forEach((child) => findLightbox(child, depth + 1));
+      }
+    }
+    findLightbox(root, 0);
+
+    const uid = lightbox?.proxy?.model?.UID;
+    if (typeof uid !== "string" || !uid) {
+      throw new Error("Could not identify the media shown in the viewer.");
+    }
+    return { uid };
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+// Runs in the PhotoPrism page, which is already logged in, so no extra authentication is needed.
+// Uploads the new media, copies the albums, labels and people of the target media to it,
+// and archives the target media.
+async function replaceImageInPage(targetUid, sourceUrl, fileName) {
+  const state = window.__qoolprismReplace || (window.__qoolprismReplace = { busy: false });
+  if (state.busy) {
+    return { error: "Another replacement is still in progress." };
+  }
+  state.busy = true;
+
+  const warnings = [];
+  const describe = (error) => error?.response?.data?.error
+    || (error instanceof Error ? error.message : String(error));
+
+  // Hex SHA-1 of the file, which is the hash PhotoPrism stores. SubtleCrypto only exists on
+  // secure pages, so servers that are used over plain HTTP need the fallback.
+  async function sha1Hex(bytes) {
+    if (globalThis.crypto?.subtle) {
+      const digest = await crypto.subtle.digest("SHA-1", bytes);
+      return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+    }
+
+    const padded = new Uint8Array((((bytes.length + 8) >> 6) << 6) + 64);
+    padded.set(bytes);
+    padded[bytes.length] = 0x80;
+    const view = new DataView(padded.buffer);
+    view.setUint32(padded.length - 8, Math.floor(bytes.length / 0x20000000));
+    view.setUint32(padded.length - 4, (bytes.length << 3) >>> 0);
+    const rotate = (value, bits) => (value << bits) | (value >>> (32 - bits));
+    const words = new Uint32Array(80);
+    let [h0, h1, h2, h3, h4] = [0x67452301, 0xEFCDAB89, 0x98BADCFE, 0x10325476, 0xC3D2E1F0];
+    for (let offset = 0; offset < padded.length; offset += 64) {
+      for (let index = 0; index < 16; index += 1) {
+        words[index] = view.getUint32(offset + (index * 4));
+      }
+      for (let index = 16; index < 80; index += 1) {
+        words[index] = rotate(words[index - 3] ^ words[index - 8] ^ words[index - 14] ^ words[index - 16], 1);
+      }
+      let [a, b, c, d, e] = [h0, h1, h2, h3, h4];
+      for (let index = 0; index < 80; index += 1) {
+        let f;
+        let k;
+        if (index < 20) {
+          f = (b & c) | (~b & d);
+          k = 0x5A827999;
+        } else if (index < 40) {
+          f = b ^ c ^ d;
+          k = 0x6ED9EBA1;
+        } else if (index < 60) {
+          f = (b & c) | (b & d) | (c & d);
+          k = 0x8F1BBCDC;
+        } else {
+          f = b ^ c ^ d;
+          k = 0xCA62C1D6;
+        }
+        const next = (rotate(a, 5) + f + e + k + words[index]) >>> 0;
+        e = d;
+        d = c;
+        c = rotate(b, 30) >>> 0;
+        b = a;
+        a = next;
+      }
+      h0 = (h0 + a) >>> 0;
+      h1 = (h1 + b) >>> 0;
+      h2 = (h2 + c) >>> 0;
+      h3 = (h3 + d) >>> 0;
+      h4 = (h4 + e) >>> 0;
+    }
+    return [h0, h1, h2, h3, h4].map((value) => value.toString(16).padStart(8, "0")).join("");
+  }
+
+  const pickFile = (photo) => (photo.Files || []).find((file) => file.Primary) || (photo.Files || [])[0];
+
+  // Share of the two areas that lies in both of them.
+  function overlap(a, b) {
+    const width = Math.min(a.X + a.W, b.X + b.W) - Math.max(a.X, b.X);
+    const height = Math.min(a.Y + a.H, b.Y + b.H) - Math.max(a.Y, b.Y);
+    if (width <= 0 || height <= 0) {
+      return 0;
+    }
+    const shared = width * height;
+    return shared / ((a.W * a.H) + (b.W * b.H) - shared);
+  }
+
+  try {
+    const app = document.querySelector("#app");
+    const globals = app?.__vue_app__?.config?.globalProperties
+      || app?._vnode?.appContext?.config?.globalProperties;
+    const api = globals?.$api || window.$api;
+    const notify = globals?.$notify;
+    const userUid = globals?.$session?.getUserUID?.();
+    if (typeof api?.get !== "function" || !userUid) {
+      throw new Error("Could not access PhotoPrism's API client.");
+    }
+
+    notify?.info?.("Replacing image…");
+
+    // What the new media inherits from the target media.
+    const target = (await api.get(`photos/${targetUid}`)).data;
+    const albumUids = (target.Albums || [])
+      .filter((album) => album?.UID && (!album.Type || album.Type === "album"))
+      .map((album) => album.UID);
+    const labels = (target.Labels || [])
+      .filter((item) => item?.Label?.Name && item.Uncertainty < 100)
+      .map((item) => ({
+        Name: item.Label.Name,
+        Priority: item.Label.Priority || 0,
+        Uncertainty: item.Uncertainty,
+      }));
+    const targetFile = pickFile(target);
+    const people = (targetFile?.Markers || [])
+      .filter((marker) => marker.Type === "face" && !marker.Invalid && marker.Name && marker.W > 0 && marker.H > 0);
+
+    // Upload the new media and import it into the library.
+    const response = await fetch(sourceUrl);
+    const blob = await response.blob();
+    if (!blob.size) {
+      throw new Error("The replacement file is empty.");
+    }
+
+    let name = fileName || "replacement";
+    if (!/\.[A-Za-z0-9]{2,5}$/.test(name)) {
+      const subtype = (blob.type.split("/")[1] || "jpeg").split("+")[0];
+      name += `.${subtype === "jpeg" ? "jpg" : subtype}`;
+    }
+
+    const hash = await sha1Hex(new Uint8Array(await blob.arrayBuffer()));
+    const token = Array.from(crypto.getRandomValues(new Uint8Array(10)), (byte) => (byte % 36).toString(36)).join("");
+    const formData = new FormData();
+    formData.append("files", new File([blob], name, { type: blob.type }));
+    await api.post(`users/${userUid}/upload/${token}`, formData, {
+      headers: { "Content-Type": "multipart/form-data" },
+    });
+    await api.put(`users/${userUid}/upload/${token}`, { albums: [] });
+
+    // Find the imported media by the hash of its file.
+    const found = (await api.get("photos", { params: { hash, count: 1 } })).data;
+    const newUid = Array.isArray(found) ? found[0]?.UID : null;
+    if (!newUid) {
+      throw new Error("The file was uploaded, but PhotoPrism did not add it to the library.");
+    }
+    if (newUid === targetUid) {
+      throw new Error("The replacement is identical to the media that is shown.");
+    }
+
+    for (const albumUid of albumUids) {
+      await api.post(`albums/${albumUid}/photos`, { photos: [newUid] });
+    }
+    for (const label of labels) {
+      await api.post(`photos/${newUid}/label`, label);
+    }
+
+    // People: the face areas are relative to the size of the image, so a copy with other
+    // dimensions keeps them as long as it has the same proportions.
+    if (people.length) {
+      const created = (await api.get(`photos/${newUid}`)).data;
+      const newFile = pickFile(created);
+      const aspect = (file) => file.Width / file.Height;
+      if (!(targetFile?.Width > 0 && targetFile?.Height > 0 && newFile?.Width > 0 && newFile?.Height > 0)) {
+        warnings.push("The people were not copied because the size of the images is unknown.");
+      } else if (Math.abs(aspect(newFile) - aspect(targetFile)) / aspect(targetFile) > 0.02) {
+        warnings.push("The people were not copied because the new image has different proportions.");
+      } else {
+        const detected = (newFile.Markers || []).filter((marker) => marker.Type === "face" && !marker.Invalid);
+        const used = new Set();
+        for (const person of people) {
+          const area = { X: person.X, Y: person.Y, W: person.W, H: person.H };
+          let match = null;
+          let best = 0.3;
+          for (const marker of detected) {
+            const score = used.has(marker.UID) ? 0 : overlap(area, marker);
+            if (score > best) {
+              match = marker;
+              best = score;
+            }
+          }
+
+          try {
+            if (match) {
+              used.add(match.UID);
+              if (match.Name !== person.Name) {
+                await api.put(`markers/${match.UID}`, { SubjSrc: "manual", Name: person.Name });
+              }
+            } else {
+              await api.post("markers", {
+                FileUID: newFile.UID,
+                Type: "face",
+                Src: "manual",
+                ...area,
+                SubjSrc: "manual",
+                Name: person.Name,
+              });
+            }
+          } catch (error) {
+            warnings.push(`Could not add ${person.Name} to the new image (${describe(error)}).`);
+          }
+        }
+      }
+    }
+
+    await api.post("batch/photos/archive", { photos: [targetUid] });
+    notify?.success?.("Image replaced");
+    return { warnings };
+  } catch (error) {
+    return { error: describe(error) };
+  } finally {
+    state.busy = false;
+  }
+}
+
 function fetchImageFromTab(tabId, frameId, imageUrl) {
   return new Promise((resolve, reject) => {
     chrome.tabs.sendMessage(
@@ -1236,6 +1494,101 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           fileName: typeof message.fileName === "string" ? message.fileName : "photoprism-video-frame.jpg",
         });
         sendResponse({ ok: true });
+      })
+      .catch((error) => {
+        sendResponse({ ok: false, error: error instanceof Error ? error.message : "An unexpected error occurred." });
+      });
+
+    return true;
+  }
+
+  if (message?.type === "replace-image") {
+    if (!Number.isInteger(sender.tab?.id) || sender.frameId !== 0 || !sender.url) {
+      sendResponse({ ok: false, error: "Could not identify the PhotoPrism tab." });
+      return false;
+    }
+
+    let senderOrigin;
+    try {
+      senderOrigin = new URL(sender.url).origin;
+    } catch {
+      sendResponse({ ok: false, error: "Could not verify the PhotoPrism tab origin." });
+      return false;
+    }
+
+    const fromUrl = message.sourceType === "url";
+    let imageUrl = null;
+    if (fromUrl) {
+      try {
+        imageUrl = new URL(message.imageUrl);
+      } catch {
+        sendResponse({ ok: false, error: "Enter a valid image URL." });
+        return false;
+      }
+      if (!["http:", "https:"].includes(imageUrl.protocol)) {
+        sendResponse({ ok: false, error: "The image URL must use HTTP or HTTPS." });
+        return false;
+      }
+    } else if (typeof message.blobUrl !== "string" || !message.blobUrl.startsWith(`blob:${senderOrigin}/`)) {
+      sendResponse({ ok: false, error: "Could not read the selected file." });
+      return false;
+    }
+
+    // Requested right away, before anything is awaited, so that the click in the viewer
+    // still counts as the user gesture the browser requires for the permission prompt.
+    const permission = fromUrl
+      ? chrome.permissions.request({ origins: [`${imageUrl.protocol}//${imageUrl.hostname}/*`] })
+      : Promise.resolve(true);
+    const target = { tabId: sender.tab.id, frameIds: [sender.frameId] };
+    Promise.all([permission, chrome.storage.local.get(SERVER_ORIGIN_KEY)])
+      .then(async ([granted, settings]) => {
+        if (settings[SERVER_ORIGIN_KEY] !== senderOrigin) {
+          throw new Error("This tab is not the configured PhotoPrism server.");
+        }
+        if (!granted) {
+          throw new Error(`Allow access to ${imageUrl.hostname} to download the replacement image.`);
+        }
+
+        // The media is identified first, so that browsing on in the viewer cannot change the target.
+        const [current] = await chrome.scripting.executeScript({
+          target,
+          world: "MAIN",
+          func: getViewerMediaUidInPage,
+        });
+        if (current?.result?.error || !current?.result?.uid) {
+          throw new Error(current?.result?.error || "Could not identify the media shown in the viewer.");
+        }
+
+        let source = message.blobUrl;
+        let fileName = typeof message.fileName === "string" ? message.fileName : "replacement";
+        if (fromUrl) {
+          const result = await fetch(imageUrl.href);
+          if (!result.ok) {
+            throw new Error(`The image server responded with ${result.status}.`);
+          }
+
+          const blob = await result.blob();
+          if (!/^(image|video)\//.test(blob.type)) {
+            throw new Error("The URL does not point to an image or video file.");
+          }
+          if (blob.size > MAX_REPLACE_URL_BYTES) {
+            throw new Error("The file is larger than the 20 MB limit for URLs.");
+          }
+
+          source = await blobToDataUrl(blob);
+          fileName = getImageFileName(imageUrl);
+        }
+
+        const [replaced] = await chrome.scripting.executeScript({
+          target,
+          world: "MAIN",
+          func: replaceImageInPage,
+          args: [current.result.uid, source, fileName],
+        });
+        if (replaced?.result?.error) {
+          throw new Error(replaced.result.error);
+        }
+        sendResponse({ ok: true, warnings: replaced?.result?.warnings || [] });
       })
       .catch((error) => {
         sendResponse({ ok: false, error: error instanceof Error ? error.message : "An unexpected error occurred." });
