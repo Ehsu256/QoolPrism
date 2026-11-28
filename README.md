@@ -9,11 +9,18 @@ Most of the code was generated with AI. Github Copilot and Claude (Sonnet 5.5) w
 ## Features
 
 - New keybinds for UI navigation and interaction.
-- Extra buttons for the image viewer: autoplay, open random image and image search.
-- Thumbnails for face marker suggestions.
-- Additional input box below face markers.
-- Image search using [Yandex](https://yandex.com/images/) and [Multi-service image search](https://iqdb.org/).
-- Right click a picture in the gallery view to open the actions menu.
+  - Keybind for multiple buttons for the thumbnails gallery and image viewer.
+  - Tab and Shift + Tab to cycle through suggestions after typing something in an input field.
+  - Hold zoom button to keep zooming and navigate the image with Shift + WASD.
+  - Use WASD to navigate thumbnails.
+  - There are bubbles that show most keybinds. You can turn this off in the extension's popup.
+- Extra features and buttons for the image viewer: autoplay, random image, image search and replace image.
+  - Image search using Google's image search, [Multi-service image search](https://iqdb.org/) and [Yandex](https://yandex.com/images/).
+- Features for face marking.
+  - Thumbnails for face marker suggestions.
+  - Additional input box below each face marker.
+- Right-clicking a picture in the thumbnails gallery opens the actions menu.
+- Volume controls.
 
 ## Install
 
