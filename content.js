@@ -60,9 +60,18 @@
   // These items should be organized alphabetically.
   // Material Design Icons "swap-horizontal".
   const REPLACE_ICON = "M21,9L17,5V8H10V10H17V13M7,11L3,15L7,19V16H14V14H7V11Z";
+  // Material Design Icons "upload" and "link".
   const REPLACE_OPTIONS = [
-    { id: "replace-file", label: "Replace with file" },
-    { id: "replace-url", label: "Replace with image URL" },
+    {
+      id: "replace-file",
+      label: "Replace with file",
+      iconPath: "M9,16V10H5L12,3L19,10H15V16H9M5,18H19V20H5V18Z",
+    },
+    {
+      id: "replace-url",
+      label: "Replace with image URL",
+      iconPath: "M3.9,12C3.9,10.29 5.29,8.9 7,8.9H11V7H7A5,5 0 0,0 2,12A5,5 0 0,0 7,17H11V15.1H7C5.29,15.1 3.9,13.71 3.9,12M8,13H16V11H8V13M17,7H13V8.9H17C18.71,8.9 20.1,10.29 20.1,12C20.1,13.71 18.71,15.1 17,15.1H13V17H17A5,5 0 0,0 22,12A5,5 0 0,0 17,7Z",
+    },
   ];
   const IMAGE_SEARCH_OPTIONS = [
     {
@@ -444,6 +453,47 @@
       });
   }
 
+  const LOADING_INDICATOR_CLASS = "qoolprism-loading";
+  const SUGGESTION_INPUT_SELECTOR = [
+    `${PERSON_ROW_SELECTOR} ${PERSON_INPUT_SELECTOR}`,
+    ".p-lightbox-sidebar .metadata__item.meta-albums .meta-inline-edit input:not([type='hidden'])",
+    ".p-lightbox-sidebar .metadata__item.meta-labels .meta-inline-edit input:not([type='hidden'])",
+  ].join(", ");
+  const SUGGESTION_ITEM_SELECTOR = '.v-list-item[role="option"]';
+  const SUGGESTION_HIGHLIGHT_CLASS = "qoolprism-suggestion-highlighted";
+  // The suggestion that Tab has highlighted in the People, Albums or Labels input that has focus.
+  let suggestionCycle = null;
+
+  function getSuggestionItems(input) {
+    const menu = document.getElementById(input.getAttribute("aria-controls") || "");
+    return menu ? Array.from(menu.querySelectorAll(SUGGESTION_ITEM_SELECTOR)).filter(isRendered) : [];
+  }
+
+  function clearSuggestionHighlight() {
+    document.querySelectorAll(`.${SUGGESTION_HIGHLIGHT_CLASS}`)
+      .forEach((item) => item.classList.remove(SUGGESTION_HIGHLIGHT_CLASS));
+    suggestionCycle = null;
+  }
+
+  // Highlights the next (or previous) suggestion without moving focus out of the input, because
+  // PhotoPrism treats leaving a people input as confirming the typed name. Enter then picks it.
+  function cycleSuggestion(input, backwards) {
+    const items = getSuggestionItems(input);
+    if (!items.length) {
+      return false;
+    }
+
+    const current = suggestionCycle?.input === input ? items.indexOf(suggestionCycle.item) : -1;
+    const index = current < 0
+      ? (backwards ? items.length - 1 : 0)
+      : (current + (backwards ? -1 : 1) + items.length) % items.length;
+    clearSuggestionHighlight();
+    items[index].classList.add(SUGGESTION_HIGHLIGHT_CLASS);
+    items[index].scrollIntoView({ block: "nearest" });
+    suggestionCycle = { input, item: items[index] };
+    return true;
+  }
+
   async function requestRandomPhotoFromGallery() {
     const response = await chrome.runtime.sendMessage({
       type: "open-random-photo",
@@ -453,8 +503,40 @@
     }
   }
 
+  // Spinner in the middle of the screen while a random image is being prepared. A counter keeps it
+  // visible while several requests overlap.
+  let randomLoadingCount = 0;
+
+  function setLoadingIndicator(visible) {
+    const existing = document.querySelector(`.${LOADING_INDICATOR_CLASS}`);
+    if (visible && !existing) {
+      const indicator = document.createElement("div");
+      indicator.className = LOADING_INDICATOR_CLASS;
+      indicator.setAttribute("role", "status");
+      indicator.setAttribute("aria-label", "Loading");
+      document.body.append(indicator);
+      // Not a CSS animation: PhotoPrism's "reduce motion" setting stops those from running.
+      indicator.animate(
+        [{ transform: "rotate(0deg)" }, { transform: "rotate(360deg)" }],
+        { duration: 800, iterations: Infinity },
+      );
+    } else if (!visible) {
+      existing?.remove();
+    }
+  }
+
   async function openRandomPhoto() {
-    await requestRandomPhotoFromGallery();
+    randomLoadingCount += 1;
+    setLoadingIndicator(true);
+    try {
+      await requestRandomPhotoFromGallery();
+    } finally {
+      randomLoadingCount -= 1;
+      if (randomLoadingCount <= 0) {
+        randomLoadingCount = 0;
+        setLoadingIndicator(false);
+      }
+    }
   }
 
   async function requestGalleryMediaUids() {
@@ -739,6 +821,44 @@
       event.stopPropagation();
       event.target.blur();
       return;
+    }
+
+    if (
+      suggestionCycle
+      && event.key === "Enter"
+      && !event.altKey
+      && !event.ctrlKey
+      && !event.metaKey
+      && !event.shiftKey
+      && event.target === suggestionCycle.input
+      && suggestionCycle.item.isConnected
+    ) {
+      const { item } = suggestionCycle;
+      event.preventDefault();
+      event.stopPropagation();
+      clearSuggestionHighlight();
+      item.click();
+      return;
+    }
+
+    if (
+      event.key === "Tab"
+      && !event.altKey
+      && !event.ctrlKey
+      && !event.metaKey
+      && !event.isComposing
+      && event.target instanceof HTMLInputElement
+      && event.target.matches(SUGGESTION_INPUT_SELECTOR)
+      && event.target.value.trim()
+      && cycleSuggestion(event.target, event.shiftKey)
+    ) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+
+    if (suggestionCycle && event.key !== "Shift") {
+      clearSuggestionHighlight();
     }
 
     if (shouldHandleSidebarShortcut(event) && !isEditableTarget(event.target)) {
@@ -1338,7 +1458,7 @@
     menu.addEventListener("pointerenter", cancelSearchMenuHide);
     menu.addEventListener("pointerleave", scheduleSearchMenuHide);
 
-    for (const { id, label, icon } of config.options) {
+    for (const { id, label, icon, iconPath } of config.options) {
       const item = document.createElement("button");
       item.type = "button";
       item.className = `${SEARCH_MENU_CLASS}__item`;
@@ -1349,6 +1469,18 @@
         logo.src = icon;
         logo.alt = "";
         logo.draggable = false;
+        item.append(logo);
+      }
+      if (iconPath) {
+        const svgNamespace = "http://www.w3.org/2000/svg";
+        const logo = document.createElementNS(svgNamespace, "svg");
+        logo.setAttribute("class", `${SEARCH_MENU_CLASS}__icon`);
+        logo.setAttribute("viewBox", "0 0 24 24");
+        logo.setAttribute("aria-hidden", "true");
+        const path = document.createElementNS(svgNamespace, "path");
+        path.setAttribute("d", iconPath);
+        path.setAttribute("fill", "currentColor");
+        logo.append(path);
         item.append(logo);
       }
       item.append(document.createTextNode(label));
@@ -1609,6 +1741,44 @@
         : target instanceof Element && Boolean(target.closest(".pswp__media, .p-lightbox__controls"))
     ) {
       lastPlayIntent = Date.now();
+    }
+  }
+
+  // A video or audio element that is removed from the page while it plays (or starts playing
+  // right after it was removed) keeps playing its sound in the background. Pause those.
+  const watchedMedia = new WeakSet();
+
+  function forEachMediaElement(node, callback) {
+    if (!(node instanceof Element)) {
+      return;
+    }
+
+    if (node.matches("video, audio")) {
+      callback(node);
+    } else {
+      node.querySelectorAll("video, audio").forEach(callback);
+    }
+  }
+
+  function pauseIfDetached(media) {
+    if (!media.isConnected && !media.paused) {
+      media.pause();
+    }
+  }
+
+  function watchMedia(media) {
+    if (watchedMedia.has(media)) {
+      return;
+    }
+
+    watchedMedia.add(media);
+    media.addEventListener("play", () => pauseIfDetached(media));
+  }
+
+  function silenceDetachedMedia(records) {
+    for (const { addedNodes, removedNodes } of records) {
+      addedNodes.forEach((node) => forEachMediaElement(node, watchMedia));
+      removedNodes.forEach((node) => forEachMediaElement(node, pauseIfDetached));
     }
   }
 
@@ -2023,6 +2193,13 @@
       if (avatar.getAttribute("src") !== source) {
         avatar.setAttribute("src", source);
       }
+    }
+  }
+
+  async function requestZoomControllerInstall() {
+    const response = await chrome.runtime.sendMessage({ type: "install-zoom-controller" });
+    if (!response?.ok) {
+      throw new Error(response?.error || "The zoom controls could not be installed.");
     }
   }
 
@@ -2650,9 +2827,65 @@
         active.blur();
       }
     }, true);
+    // background.js asks the page for the image (message "fetch-image-for-yandex") before it
+    // falls back to downloading it itself. Fetching it here uses the same session and browser
+    // cache that loaded the image in the viewer, which a download from the background does not.
+    chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+      if (sender.id !== chrome.runtime.id || message?.type !== "fetch-image-for-yandex") {
+        return false;
+      }
+
+      (async () => {
+        const imageUrl = new URL(message.imageUrl, window.location.href);
+        if (imageUrl.origin !== window.location.origin) {
+          throw new Error("The selected image is not on the PhotoPrism server.");
+        }
+
+        const response = await fetch(imageUrl.href, { credentials: "same-origin" });
+        if (!response.ok) {
+          throw new Error(`The image server responded with ${response.status}.`);
+        }
+
+        const blob = await response.blob();
+        if (!blob.type.startsWith("image/")) {
+          throw new Error("The selected media is not an image that can be uploaded.");
+        }
+        if (blob.size > 20 * 1024 * 1024) {
+          throw new Error("The image is larger than the 20 MB upload limit.");
+        }
+
+        const dataUrl = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result);
+          reader.onerror = () => reject(reader.error);
+          reader.readAsDataURL(blob);
+        });
+
+        let fileName = "photoprism-image";
+        try {
+          fileName = decodeURIComponent(imageUrl.pathname.split("/").pop()) || fileName;
+        } catch {
+          // Keep the default name.
+        }
+
+        sendResponse({ ok: true, dataUrl, fileName });
+      })().catch((error) => {
+        sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) });
+      });
+
+      return true;
+    });
     requestPersonThumbCapture().catch((error) => {
       console.warn("Could not capture PhotoPrism's people list.", error);
     });
+    requestZoomControllerInstall().catch((error) => {
+      console.warn("Could not install the PhotoPrism zoom controls.", error);
+    });
+    document.addEventListener("focusout", (event) => {
+      if (suggestionCycle && event.target === suggestionCycle.input) {
+        clearSuggestionHighlight();
+      }
+    }, true);
     for (const type of ["input", "focusin", "focusout"]) {
       document.addEventListener(type, (event) => {
         const target = event.target;
@@ -2704,6 +2937,7 @@
     }, true);
 
     const observer = new MutationObserver((records) => {
+      silenceDetachedMedia(records);
       const pageChanged = records.some(({ type, target, addedNodes, removedNodes }) => {
         const element = target instanceof Element ? target : target.parentElement;
         if (

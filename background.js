@@ -462,6 +462,9 @@ async function openRandomPhotoInPage() {
     // until PhotoPrism has finished cleaning up. Opening too early would let that clean-up
     // wipe the new media again and leave the viewer unusable until the page is reloaded.
     if (lightboxIsOpen(lightbox)) {
+      // Media that is still playing when the viewer is torn down can keep playing unseen.
+      document.querySelectorAll(".p-lightbox video, .p-lightbox audio")
+        .forEach((media) => media.pause());
       const closing = getSlideshow(lightbox);
       if (typeof closing?.close !== "function") {
         throw new Error("The PhotoPrism viewer could not be closed.");
@@ -909,7 +912,8 @@ async function replaceImageInPage(targetUid, sourceUrl, fileName) {
       throw new Error("The replacement file is empty.");
     }
 
-    let name = fileName || "replacement";
+    // PhotoPrism rejects uploads whose name starts with ".", "@", "$", "~" or "_".
+    let name = (fileName || "").replace(/^[._@$~]+/, "") || "replacement";
     if (!/\.[A-Za-z0-9]{2,5}$/.test(name)) {
       const subtype = (blob.type.split("/")[1] || "jpeg").split("+")[0];
       name += `.${subtype === "jpeg" ? "jpg" : subtype}`;
@@ -1054,8 +1058,11 @@ function waitForTabToLoad(tabId) {
       cleanup();
       reject(error);
     };
-    const onUpdated = (updatedTabId, changeInfo) => {
-      if (updatedTabId === tabId && changeInfo.status === "complete") {
+    // A tab that was just created can report "complete" for its empty initial page, before it
+    // has started loading the real address. The upload would then run on that empty page.
+    const hasLoadedPage = (tab) => !tab.pendingUrl && tab.url !== "about:blank";
+    const onUpdated = (updatedTabId, changeInfo, tab) => {
+      if (updatedTabId === tabId && changeInfo.status === "complete" && hasLoadedPage(tab)) {
         cleanup();
         resolve();
       }
@@ -1066,7 +1073,7 @@ function waitForTabToLoad(tabId) {
     chrome.tabs.get(tabId, (tab) => {
       if (chrome.runtime.lastError) {
         fail(new Error(chrome.runtime.lastError.message));
-      } else if (tab.status === "complete") {
+      } else if (tab.status === "complete" && hasLoadedPage(tab)) {
         cleanup();
         resolve();
       }
@@ -1328,6 +1335,372 @@ chrome.runtime.onStartup.addListener(() => {
   });
 });
 
+// Runs in the PhotoPrism page, because only there the viewer's slide can be reached. Changes how the
+// viewer zooms images, whether it is the zoom button, the Z key or the mouse on the image:
+// - Holding keeps zooming in until it is released or the maximum zoom is reached. A short press
+//   still zooms to PhotoSwipe's usual level.
+// - Pressing again while zoomed in zooms back out.
+// - Shift + W/A/S/D moves around the zoomed image.
+function installZoomControllerInPage() {
+  if (window.__qoolprismZoom) {
+    return;
+  }
+  window.__qoolprismZoom = true;
+
+  // A press shorter than this is a normal click instead of the start of a hold.
+  const HOLD_DELAY_MS = 200;
+  // How much the zoom level is multiplied by every second while holding.
+  const ZOOM_PER_SECOND = 2.5;
+  // How far the mouse may move during a press on the image before it counts as a drag.
+  const MOVE_TOLERANCE_PX = 6;
+  // After a hold ends, the click that follows it must not toggle the zoom again.
+  const SUPPRESS_CLICK_MS = 400;
+  const PAN_PIXELS_PER_SECOND = 800;
+  const PAN_KEYS = ["w", "a", "s", "d"];
+
+  const state = {
+    lightbox: null,
+    pending: null, // The press that may turn into a hold: { kind, point, x, y, timer, started }.
+    holdFrame: 0,
+    holding: null, // The zoom that is in progress: { slide, point }.
+    suppressUntil: 0,
+    panKeys: new Set(),
+    panFrame: 0,
+    panLast: 0,
+  };
+
+  function isEditable(target) {
+    return Boolean(target?.isContentEditable)
+      || (target instanceof Element && Boolean(target.closest(
+        'input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="textbox"]',
+      )));
+  }
+
+  function findLightbox() {
+    if (state.lightbox && !state.lightbox.isUnmounted) {
+      return state.lightbox;
+    }
+    state.lightbox = null;
+
+    const root = document.querySelector("#app")?._vnode;
+    if (!root) {
+      return null;
+    }
+
+    const visited = new Set();
+    const walk = (vnode, depth) => {
+      if (!vnode || typeof vnode !== "object" || depth > 100 || visited.has(vnode) || state.lightbox) {
+        return;
+      }
+      visited.add(vnode);
+
+      const instance = vnode.component;
+      if (instance) {
+        if (instance.type?.name === "PLightbox" || instance.type?.__name === "PLightbox") {
+          state.lightbox = instance;
+          return;
+        }
+        walk(instance.subTree, depth + 1);
+      }
+      if (vnode.suspense) {
+        walk(vnode.suspense.activeBranch, depth + 1);
+        walk(vnode.suspense.pendingBranch, depth + 1);
+      }
+      if (Array.isArray(vnode.children)) {
+        vnode.children.forEach((child) => walk(child, depth + 1));
+      }
+      if (Array.isArray(vnode.dynamicChildren)) {
+        vnode.dynamicChildren.forEach((child) => walk(child, depth + 1));
+      }
+    };
+    walk(root, 0);
+    return state.lightbox;
+  }
+
+  // Every way of zooming (button, Z key, click on the image) ends up in the slide's toggleZoom.
+  // The click that follows a hold has to be ignored there, or it would undo the hold.
+  function patchToggleZoom(slide) {
+    const proto = Object.getPrototypeOf(slide);
+    const original = proto.toggleZoom;
+    if (typeof original !== "function" || original.__qoolprism) {
+      return;
+    }
+
+    const patched = function toggleZoom(...args) {
+      if (performance.now() < state.suppressUntil) {
+        state.suppressUntil = 0;
+        return undefined;
+      }
+      return original.apply(this, args);
+    };
+    patched.__qoolprism = true;
+    proto.toggleZoom = patched;
+  }
+
+  function getSlide() {
+    if (!document.querySelector(".p-lightbox[aria-modal='true']")) {
+      return null;
+    }
+
+    const box = findLightbox();
+    const pswp = box?.proxy?.pswp?.() || box?.data?.lightbox?.pswp || null;
+    const slide = pswp?.currSlide || null;
+    if (!slide || typeof slide.zoomTo !== "function") {
+      return null;
+    }
+
+    patchToggleZoom(slide);
+    return { pswp, slide };
+  }
+
+  const isZoomed = (slide) => slide.currZoomLevel > slide.zoomLevels.initial + 0.001;
+  const canStartHold = (slide) => slide.isZoomable()
+    && !isZoomed(slide)
+    && slide.zoomLevels.max > slide.zoomLevels.initial;
+
+  function stopHold() {
+    if (state.holdFrame) {
+      cancelAnimationFrame(state.holdFrame);
+      state.holdFrame = 0;
+    }
+
+    const holding = state.holding;
+    state.holding = null;
+    if (holding && getSlide()?.slide === holding.slide) {
+      // The image was only scaled while zooming, which the browser draws sharply from the loaded
+      // image. Resizing it now (PhotoSwipe's resolution change) makes it flicker, so only ask
+      // PhotoPrism to load a sharper thumbnail. That changes the image source, not its size.
+      state.lightbox?.proxy?.onImageSizeChange?.();
+    }
+  }
+
+  function beginHold(pswp, slide, point) {
+    stopHold();
+    pswp.animations?.stopAllPan?.();
+    state.holding = { slide, point };
+    let last = performance.now();
+    const tick = (now) => {
+      state.holdFrame = 0;
+      const current = getSlide();
+      if (!current || current.slide !== slide) {
+        state.holding = null;
+        return;
+      }
+
+      const seconds = Math.min(0.1, (now - last) / 1000);
+      last = now;
+      const max = slide.zoomLevels.max;
+      const previous = slide.currZoomLevel;
+      const level = Math.min(max, previous * (ZOOM_PER_SECOND ** seconds));
+      if (!pswp.mainScroll?.isShifted?.()) {
+        // Like PhotoSwipe's pinch zoom: no rounding and no resizing of the image, as that makes
+        // the image shake or flicker.
+        slide.setZoomLevel(level);
+        slide.pan.x = slide.calculateZoomToPanOffset("x", point, previous);
+        slide.pan.y = slide.calculateZoomToPanOffset("y", point, previous);
+        slide.applyCurrentZoomPan();
+      }
+
+      if (level < max) {
+        state.holdFrame = requestAnimationFrame(tick);
+      } else {
+        stopHold();
+      }
+    };
+    state.holdFrame = requestAnimationFrame(tick);
+  }
+
+  function clearPending() {
+    if (state.pending) {
+      clearTimeout(state.pending.timer);
+      state.pending = null;
+    }
+    stopHold();
+  }
+
+  // Starts a press. It becomes a hold when it lasts long enough.
+  function arm(kind, point, x, y) {
+    clearPending();
+    const pending = { kind, point, x, y, timer: 0, started: false };
+    pending.timer = setTimeout(() => {
+      if (state.pending !== pending) {
+        return;
+      }
+
+      const current = getSlide();
+      if (!current || !canStartHold(current.slide)) {
+        state.pending = null;
+        return;
+      }
+      pending.started = true;
+      beginHold(current.pswp, current.slide, point);
+    }, HOLD_DELAY_MS);
+    state.pending = pending;
+  }
+
+  function release() {
+    const pending = state.pending;
+    if (!pending) {
+      return;
+    }
+
+    clearTimeout(pending.timer);
+    state.pending = null;
+    stopHold();
+
+    if (pending.started) {
+      // The click that follows releasing the button or the image must not toggle the zoom.
+      if (pending.kind !== "key") {
+        state.suppressUntil = performance.now() + SUPPRESS_CLICK_MS;
+      }
+    } else if (pending.kind === "key") {
+      // A short press of Z behaves like PhotoSwipe's own Z key.
+      getSlide()?.slide.toggleZoom();
+    }
+  }
+
+  function onPointerDown(event) {
+    state.suppressUntil = 0;
+    if (event.button !== 0 || event.isPrimary === false || !(event.target instanceof Element)) {
+      return;
+    }
+
+    const onButton = Boolean(event.target.closest(".pswp__button--zoom"));
+    const onImage = !onButton
+      && event.pointerType === "mouse"
+      && event.target.classList.contains("pswp__img");
+    if (!onButton && !onImage) {
+      return;
+    }
+
+    const current = getSlide();
+    if (!current || !canStartHold(current.slide)) {
+      return;
+    }
+
+    let point;
+    const rect = current.pswp.element?.getBoundingClientRect();
+    if (onImage && rect) {
+      point = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+    }
+    arm(onButton ? "button" : "image", point, event.clientX, event.clientY);
+  }
+
+  function onPointerMove(event) {
+    const pending = state.pending;
+    if (
+      pending?.kind === "image"
+      && Math.hypot(event.clientX - pending.x, event.clientY - pending.y) > MOVE_TOLERANCE_PX
+    ) {
+      // The mouse is dragging the image, which PhotoSwipe handles.
+      clearPending();
+    }
+  }
+
+  function panTick(now) {
+    state.panFrame = 0;
+    const current = getSlide();
+    if (!current || !state.panKeys.size || !isZoomed(current.slide)) {
+      state.panKeys.clear();
+      return;
+    }
+
+    const step = PAN_PIXELS_PER_SECOND * Math.min(0.1, (now - state.panLast) / 1000);
+    state.panLast = now;
+    let dx = 0;
+    let dy = 0;
+    // The keys move the view, so the image moves the other way.
+    if (state.panKeys.has("a")) dx += step;
+    if (state.panKeys.has("d")) dx -= step;
+    if (state.panKeys.has("w")) dy += step;
+    if (state.panKeys.has("s")) dy -= step;
+
+    current.pswp.animations?.stopAllPan?.();
+    current.slide.panTo(current.slide.pan.x + dx, current.slide.pan.y + dy);
+    state.panFrame = requestAnimationFrame(panTick);
+  }
+
+  function onKeyDown(event) {
+    if (event.altKey || event.ctrlKey || event.metaKey || event.isComposing || typeof event.key !== "string") {
+      return;
+    }
+
+    const key = event.key.toLowerCase();
+    if (key === "z" && !event.shiftKey) {
+      if (event.defaultPrevented || isEditable(event.target)) {
+        return;
+      }
+
+      // Holding Z repeats the key. PhotoSwipe would toggle the zoom on every repeat.
+      if (event.repeat) {
+        if (getSlide()) {
+          event.preventDefault();
+          event.stopPropagation();
+        }
+        return;
+      }
+
+      // While zoomed in, PhotoSwipe's own Z key zooms back out.
+      const current = getSlide();
+      if (!current || !canStartHold(current.slide)) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      if (!state.pending) {
+        state.suppressUntil = 0;
+        arm("key", undefined, 0, 0);
+      }
+      return;
+    }
+
+    if (event.shiftKey && PAN_KEYS.includes(key)) {
+      if (isEditable(event.target)) {
+        return;
+      }
+
+      const current = getSlide();
+      if (!current || !isZoomed(current.slide)) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      state.panKeys.add(key);
+      if (!state.panFrame) {
+        state.panLast = performance.now();
+        state.panFrame = requestAnimationFrame(panTick);
+      }
+    }
+  }
+
+  function onKeyUp(event) {
+    const key = typeof event.key === "string" ? event.key.toLowerCase() : "";
+    if (key === "z" && state.pending?.kind === "key") {
+      release();
+    }
+    if (key === "shift") {
+      state.panKeys.clear();
+    } else {
+      state.panKeys.delete(key);
+    }
+  }
+
+  function reset() {
+    clearPending();
+    state.panKeys.clear();
+  }
+
+  window.addEventListener("pointerdown", onPointerDown, true);
+  window.addEventListener("pointermove", onPointerMove, true);
+  window.addEventListener("pointerup", release, true);
+  window.addEventListener("pointercancel", release, true);
+  window.addEventListener("keydown", onKeyDown, true);
+  window.addEventListener("keyup", onKeyUp, true);
+  window.addEventListener("blur", reset);
+}
+
 // Runs in the PhotoPrism page. Captures the people list PhotoPrism loads for the viewer
 // and passes each person's name and cover image hash to the extension.
 function capturePersonThumbsInPage() {
@@ -1398,7 +1771,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return false;
   }
 
-  if (message?.type === "capture-person-thumbs") {
+  if (message?.type === "capture-person-thumbs" || message?.type === "install-zoom-controller") {
     let senderOrigin;
     try {
       senderOrigin = new URL(sender.url).origin;
@@ -1421,7 +1794,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return chrome.scripting.executeScript({
           target: { tabId: sender.tab.id, frameIds: [sender.frameId] },
           world: "MAIN",
-          func: capturePersonThumbsInPage,
+          func: message.type === "install-zoom-controller"
+            ? installZoomControllerInPage
+            : capturePersonThumbsInPage,
         });
       })
       .then(() => sendResponse({ ok: true }))
